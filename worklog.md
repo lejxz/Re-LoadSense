@@ -217,3 +217,28 @@ Stage Summary:
 - Vercel coverage (the central focus of 09): two-target table (sim→Vercel, prod→k8s); detailed Vercel sim deployment flowchart; Vercel products used (Postgres, KV, Blob, Cron, Edge Config, Env Vars Encrypted); the WebSocket gap section with three options (socket.io mini-service via XTransformPort RECOMMENDED, SSE 30s cap, polling 5s); 12-row Vercel feature mapping table; full vercel.json outline with functions memory overrides + 4 cron jobs + security headers; environment strategy (Development/Preview/Production); custom domains (app/ops/gov.re-loadsense.dev as route groups in one Vercel project); Edge vs Node.js runtime decision table; performance + cold-start mitigation; Vercel limits-to-flag table (8 limits with mitigations); k8s production target flowchart + Helm + GitOps + canary; CI/CD flowchart covering both targets; SLOs table for both; graceful shutdown discussion (k8s SIGTERM vs Vercel stateless); simulation deviations summary.
 - Every non-trivial decision traces to a lessons-learned §X.Y citation (§2.2, §2.5, §2.6, §2.8, §2.9, §2.10, §3, §3.1, §3.2, §3.3, §3.4, §3.5, §3.6, §3.7, §3.8, §3.15, §3.17, §4.4, §5.5, §5.6, §6, §8, §9); every doc has a TOC, cross-references to siblings and to ../02-improved-concept.md and ../03-features-list.md, and a "Simulation deviations" subsection covering the Vercel deployment adaptation.
 - This completes the architecture folder (10 docs total: README + 01 through 09). Next session can use 09-deployment-topology.md §2 as the Vercel deployment handbook.
+
+---
+Task ID: ORCHESTRATOR-RESTRUCTURE
+Agent: Z.ai Code (orchestrator)
+Task: Restructure concept into architecture/features/build-plan folders with mermaid diagrams, Vercel hosting, commit and push
+
+Work Log:
+- Verified current state: architecture folder complete (9 docs + README from prior batches A/B/C), features folder had 7/9 docs (missing security-compliance + infrastructure-devops), build-plan folder had 4/5 docs (missing implementation-checklist)
+- Wrote concept/features/security-compliance.md (582 lines) covering S-01 to S-13 with full explanation/description/implementation/acceptance/lesson-traceability/sim-scope per feature
+- Wrote concept/features/infrastructure-devops.md (739 lines) covering N-01 to N-10 + X-01 to X-12 with the same structure, including Vercel-specific infra notes (Vercel Cron, env vars, Preview deploys)
+- Wrote concept/build-plan/implementation-checklist.md (949 lines) — the ordered 131-step build checklist across 12 phases (0=bootstrap through 11=testing+CI), each step with Build/Where/Features/Done-when format, respecting dependencies (auth before routes, data before API, API before UI)
+- Removed 3 superseded single-file docs (02-improved-concept.md, 03-features-list.md, 04-roadmap-and-milestones.md) whose content was expanded and split into the new structure
+- Verified final structure: 26 markdown files, ~11,791 lines total, 20 mermaid diagrams (C4Context, C4Container, erDiagram, sequenceDiagram, flowchart, stateDiagram)
+- Verified mermaid syntax samples (C4Context block in 01-system-overview, erDiagram in 04-data-model) are valid
+- Committed (0f2a05e) with detailed message documenting the full restructure
+- Pushed to https://github.com/lejxz/Re-LoadSense.git main successfully
+- Verified remote: commit 0f2a05e on origin/main
+
+Stage Summary:
+- concept/ folder fully restructured into 4 subfolders: legacy-analysis (1 doc), architecture (10 docs, 20 mermaid), features (9 docs, 90 features), build-plan (5 docs, 131-step checklist)
+- Vercel fast hosting support is prominent: 09-deployment-topology.md §2-9 is the Vercel handbook (12-row feature mapping, vercel.json outline, WebSocket-gap analysis, Edge vs Node runtime decision, limits table); tech-stack.md has the Vercel-native stack; implementation-checklist Phase 0 includes Vercel project setup + vercel.json
+- Legacy analysis (old project's problems) separated into its own folder so the new planning stands on its own
+- All mermaid diagrams use valid syntax (no ASCII art)
+- No code — this is the planning pass; next session builds the full mobile-first simulation website on Vercel using the implementation-checklist.md as the step-by-step guide
+- Note: This was a planning/docs task, NOT a website development task, so no webDevReview cron job was created
