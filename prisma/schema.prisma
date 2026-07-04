@@ -218,8 +218,10 @@ model OperatorFeedback {
   note    String?
   at      DateTime @default(now())
   alert   OperatorAlert @relation(fields: [alertId], references: [id])
+  user    User     @relation(fields: [userId], references: [id])
 
   @@index([alertId])
+  @@index([userId])
 }
 
 // ── Users + chatbot ──
@@ -237,6 +239,8 @@ model User {
   updatedAt    DateTime  @updatedAt
   operator     Operator? @relation(fields: [operatorId], references: [id])
   country      Country   @relation(fields: [countryCode], references: [code])
+  feedback     OperatorFeedback[]
+  chatbotQueries ChatbotQuery[]
 
   @@index([operatorId])
 }
@@ -248,9 +252,10 @@ model ChatbotQuery {
   query     String
   response  String
   intent    String?
-  entities  String?  // JSON
+  entities  String?  // JSON (SQLite compat; production would use Json)
   language  String   @default("en")
   createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([createdAt])

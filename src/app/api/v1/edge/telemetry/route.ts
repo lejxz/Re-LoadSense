@@ -49,6 +49,16 @@ export async function POST(req: Request) {
   })
   if (!vehicle) return apiError('not_found', `Vehicle '${t.vehicleCode}' not found.`)
 
+  // ── Dedup check: reject if a telemetry with the same (vehicleId, seq) already exists ──
+  // See concept/04-features.md §8.3 — seq is monotonic per device; duplicates are rejected.
+  const existing = await db.telemetryLog.findFirst({
+    where: { vehicleId: vehicle.id, seq: t.seq },
+    select: { id: true },
+  })
+  if (existing) {
+    return apiError('conflict', `Duplicate telemetry (vehicleId=${vehicle.id}, seq=${t.seq}). Already ingested.`)
+  }
+
   // ── Write telemetry ──
   const timestamp = new Date(t.timestamp)
   const telemetryLog = await db.telemetryLog.create({
