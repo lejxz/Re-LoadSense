@@ -1,7 +1,6 @@
 # 06 — Project Structure
 
-> The monorepo directory tree with file purposes. Where each feature from
-> [`04-features.md`](./04-features.md) lives in the codebase.
+> Hybrid: existing HTML/CSS/JS frontend (from old project) + new Next.js 16 backend.
 
 ---
 
@@ -9,10 +8,7 @@
 
 1. [Directory tree](#1-directory-tree)
 2. [Key files explained](#2-key-files-explained)
-3. [Route groups (the 3 apps)](#3-route-groups-the-3-apps)
-4. [API routes](#4-api-routes)
-5. [The simulator](#5-the-simulator)
-6. [The socket.io mini-service](#6-the-socketio-mini-service)
+3. [How the old JS talks to the new backend](#3-how-the-old-js-talks-to-the-new-backend)
 
 ---
 
@@ -23,164 +19,104 @@ re-loadsense/
 ├── package.json
 ├── tsconfig.json
 ├── next.config.ts
-├── tailwind.config.ts
-├── postcss.config.mjs
 ├── vercel.json
 ├── .env.example
 ├── .env.local                 # gitignored
-│
 ├── prisma/
-│   ├── schema.prisma          # DB schema (see 03-data-model.md §6)
-│   ├── seed.ts                # Seeds 1 country, 1 operator, 6 routes, 15 vehicles, 2 users
+│   ├── schema.prisma          # 13-model DB schema (see 03-data-model.md)
+│   ├── seed.ts                # Seeds 8 Cebu routes + 16 vehicles + 2 users
 │   └── migrations/
 │
 ├── public/
-│   └── images/                # logo, route thumbnails
+│   └── app/                   # ── OLD PROJECT FRONTEND (kept as-is) ──
+│       ├── mobile.html        # Commuter UI (4 tabs + new 5th Menu tab)
+│       ├── operator.html      # Operator console
+│       ├── index.html         # Landing portal
+│       ├── favicon.ico
+│       ├── css/
+│       │   ├── variables.css  # Design tokens (--teal, --wash, --panel, etc.)
+│       │   ├── base.css       # Typography, resets
+│       │   ├── components.css  # Buttons, pills, modals, toasts
+│       │   ├── mobile.css     # Phone frame, tabs, hero card, chat
+│       │   ├── map.css        # Map layout, markers, legend
+│       │   ├── operator.css   # Operator console layout
+│       │   └── portal.css     # Landing portal
+│       ├── js/
+│       │   ├── core.js        # Shared state + API helper (const api = origin + '/api')
+│       │   ├── data.js        # Data fetching + dirty-checking
+│       │   ├── map.js         # Leaflet map + markers + polylines + clustering
+│       │   ├── mobile.js      # Commuter app logic (tabs, home, routes, chat)
+│       │   ├── operator.js    # Operator console logic
+│       │   ├── places.js      # Place search (Photon proxy)
+│       │   ├── alerts.js      # Alert submission
+│       │   ├── routes-admin.js # Route/vehicle CRUD admin
+│       │   ├── socket.js      # NEW: socket.io-client integration
+│       │   └── main.js        # Entry point
+│       └── vendor/
+│           └── leaflet/       # Vendored Leaflet + markercluster
 │
 ├── mini-services/
-│   └── socket/                # socket.io mini-service (separate port 3001)
+│   └── socket/                # socket.io mini-service (port 3001)
 │       ├── package.json
 │       ├── index.ts
-│       └── README.md          # explains XTransformPort=3001
+│       └── README.md
 │
 └── src/
     ├── app/
-    │   ├── layout.tsx         # root layout (providers: Theme, QueryClient)
-    │   ├── globals.css        # Tailwind + design tokens
-    │   ├── page.tsx           # redirects to /(commuter)
-    │   │
-    │   ├── (commuter)/        # ── COMMUTER APP (the showcase) ──
-    │   │   ├── layout.tsx     # header + bottom nav
-    │   │   ├── page.tsx       # Map tab (default) — C-01
-    │   │   ├── routes/
-    │   │   │   ├── page.tsx   # Route directory — C-05
-    │   │   │   └── [routeId]/page.tsx  # Route detail — C-05
-    │   │   ├── chat/
-    │   │   │   └── page.tsx   # Chatbot — C-03
-    │   │   └── plan/
-    │   │       └── page.tsx   # Trip planner — C-04
-    │   │
-    │   ├── (operator)/        # ── OPERATOR CONSOLE (minimal) ──
-    │   │   ├── layout.tsx     # top nav + simple sidebar
-    │   │   ├── page.tsx       # Fleet table (default) — O-01
-    │   │   ├── alerts/
-    │   │   │   └── page.tsx   # Alerts + verification — O-02
-    │   │   ├── vehicles/
-    │   │   │   └── page.tsx   # Vehicle CRUD — O-03
-    │   │   └── routes/
-    │   │       └── page.tsx   # Route list (read-only) — O-04
-    │   │
-    │   ├── (regulator)/       # ── REGULATOR (optional, simple) ──
-    │   │   ├── layout.tsx
-    │   │   └── page.tsx       # Simple KPI page (read-only)
-    │   │
-    │   └── api/
-    │       ├── v1/
-    │       │   ├── fleet/
-    │       │   │   ├── route.ts           # GET /api/v1/fleet
-    │       │   │   └── [vehicleId]/route.ts
-    │       │   ├── routes/
-    │       │   │   ├── route.ts
-    │       │   │   └── [routeId]/route.ts
-    │       │   ├── eta/
-    │       │   │   └── [vehicleId]/route.ts
-    │       │   ├── demand/
-    │       │   │   └── forecast/route.ts
-    │       │   ├── alerts/
-    │       │   │   ├── route.ts
-    │       │   │   └── [id]/
-    │       │   │       ├── acknowledge/route.ts
-    │       │   │       ├── verify/route.ts
-    │       │   │       └── false-alarm/route.ts
-    │       │   ├── chatbot/route.ts
-    │       │   ├── places/route.ts
-    │       │   ├── trip-suggestions/route.ts
-    │       │   ├── edge/
-    │       │   │   └── telemetry/route.ts # sim ingest
-    │       │   └── admin/
-    │       │       ├── vehicles/route.ts
-    │       │       └── routes/route.ts
+    │   ├── layout.tsx         # Root layout (providers)
+    │   ├── page.tsx           # Redirects to /app/mobile.html
+    │   └── api/               # ── NEW NEXT.JS BACKEND ──
+    │       ├── health/        # GET /api/health
+    │       ├── ready/         # GET /api/ready
     │       ├── cron/
-    │       │   └── sim-tick/route.ts      # Vercel Cron — S-01
-    │       ├── health/route.ts            # X-03
-    │       └── ready/route.ts             # X-03
-    │
-    ├── components/
-    │   ├── ui/               # shadcn primitives (button, card, dialog, input, etc.)
-    │   ├── shared/            # shared components
-    │   │   ├── sim-badge.tsx
-    │   │   ├── tier-pill.tsx
-    │   │   ├── theme-toggle.tsx
-    │   │   └── offline-banner.tsx
-    │   ├── commuter/
-    │   │   ├── app-shell.tsx
-    │   │   ├── bottom-nav.tsx
-    │   │   ├── profile-menu.tsx
-    │   │   └── vehicle-detail-sheet.tsx
-    │   ├── operator/
-    │   │   ├── app-shell.tsx
-    │   │   ├── sidebar.tsx
-    │   │   ├── fleet-table.tsx
-    │   │   ├── vehicle-drawer.tsx
-    │   │   ├── alerts-list.tsx
-    │   │   ├── alert-detail-modal.tsx
-    │   │   └── vehicle-form-modal.tsx
-    │   ├── map/
-    │   │   ├── fleet-map.tsx
-    │   │   ├── vehicle-marker.tsx
-    │   │   ├── vehicle-popup.tsx
-    │   │   └── locate-fab.tsx
-    │   └── chat/
-    │       ├── chat-messages.tsx
-    │       └── chat-input.tsx
+    │       │   └── sim-tick/  # POST /api/cron/sim-tick (Vercel Cron)
+    │       └── v1/            # Versioned API (or unversioned to match old paths)
+    │           ├── fleet/     # GET /api/fleet, /api/fleet/:id
+    │           ├── routes/    # GET /api/routes, /api/routes/:id
+    │           ├── eta/       # GET /api/eta/:id
+    │           ├── demand/    # GET /api/demand
+    │           ├── alerts/    # GET /api/alerts + POST verify/ack/false-alarm
+    │           ├── chatbot/   # POST /api/chatbot
+    │           ├── places/    # GET /api/places
+    │           ├── trip-suggestions/ # POST /api/trip-suggestions
+    │           ├── edge/
+    │           │   └── telemetry/ # POST /api/edge/telemetry
+    │           └── admin/
+    │               ├── vehicles/ # CRUD with type constraint
+    │               └── routes/    # CRUD with 409 on used-type removal
     │
     ├── lib/
     │   ├── db.ts              # Prisma client singleton
     │   ├── redis.ts           # Vercel KV client
-    │   ├── auth.ts            # NextAuth config (or demo toggle)
-    │   ├── logger.ts          # pino logger
-    │   ├── config.ts          # env vars (typed)
-    │   ├── validators.ts      # Zod schemas (shared) — see 03-data-model.md
-    │   ├── api-error.ts       # consistent error response helper
-    │   ├── simulator.ts       # ★ the seeded synthetic fleet engine — S-01
+    │   ├── config.ts          # Typed env config
+    │   ├── logger.ts          # pino structured logger
+    │   ├── api-error.ts       # Consistent error response helper
+    │   ├── validators.ts      # Zod schemas (shared)
+    │   ├── simulator.ts       # Seeded synthetic fleet engine
+    │   ├── map-themes.ts      # 5 tile provider configs
     │   ├── ml/
-    │   │   ├── eta.ts         # ETA calculation — Calc-01
-    │   │   ├── demand.ts      # Demand forecast — Calc-02
-    │   │   └── occupancy.ts   # 4-tier classification — S-02
+    │   │   ├── eta.ts         # ETA = distance / (speed × traffic_factor)
+    │   │   ├── demand.ts      # Seeded historical mean
+    │   │   └── occupancy.ts   # 4-tier with hysteresis
     │   ├── geo/
-    │   │   ├── haversine.ts   # distance between two lat/lon
-    │   │   ├── bbox.ts        # bounding-box containment
-    │   │   └── route-match.ts # match GPS to route polyline — Calc-04
+    │   │   ├── haversine.ts   # Distance between lat/lon
+    │   │   ├── bearing.ts     # Compass heading + point interpolation
+    │   │   ├── bbox.ts        # Bounding-box + geofence
+    │   │   └── route-match.ts # Match GPS to route polyline
+    │   ├── edge/
+    │   │   └── line-counter.ts # Real counting algorithm (honest sim)
     │   └── services/
     │       ├── fleet-service.ts
-    │       ├── alert-service.ts      # S-03 alert generation + verification
-    │       ├── chatbot-service.ts    # C-03 grounded chatbot
-    │       ├── trip-service.ts       # C-04 trip planning
-    │       ├── geocode-service.ts    # C-06 Photon proxy + cache
-    │       └── telemetry-service.ts  # S-01 ingest + enrich + publish
+    │       ├── alert-service.ts
+    │       ├── chatbot-service.ts
+    │       ├── trip-service.ts
+    │       ├── geocode-service.ts
+    │       └── telemetry-service.ts
     │
-    ├── hooks/
-    │   ├── use-fleet.ts          # TanStack Query: live fleet
-    │   ├── use-fleet-socket.ts   # socket.io connection — RT-01
-    │   ├── use-vehicle.ts
-    │   ├── use-alerts.ts         # + socket subscription — RT-02
-    │   ├── use-chat.ts
-    │   ├── use-geolocation.ts
-    │   └── use-online-status.ts
-    │
-    ├── stores/
-    │   ├── ui-store.ts           # Zustand: active tab, selected vehicle, map viewport
-    │   └── chat-store.ts         # Zustand: chat history
-    │
-    ├── types/
-    │   └── index.ts              # shared TS types (Vehicle, Route, Alert, etc.)
-    │
-    └── middleware.ts            # auth + role check (if using NextAuth)
+    └── types/
+        └── index.ts          # Shared TS types
 │
 └── tests/
-    ├── e2e/
-    │   ├── commuter.spec.ts
-    │   └── operator.spec.ts
     └── unit/
         └── lib/
             ├── eta.test.ts
@@ -193,121 +129,34 @@ re-loadsense/
 
 ## 2. Key files explained
 
-| File | Purpose | Feature |
+| File | Purpose | Source |
 |---|---|---|
-| `prisma/schema.prisma` | DB schema — see [`03-data-model.md §6`](./03-data-model.md#6-prisma-schema) | Foundation |
-| `prisma/seed.ts` | Seeds PH, 1 operator, 6 routes, 15 vehicles, 2 users | Foundation |
-| `src/lib/simulator.ts` | The seeded synthetic fleet engine | S-01 |
-| `src/lib/ml/eta.ts` | ETA = distance / (speed × traffic_factor) | Calc-01 |
-| `src/lib/ml/demand.ts` | Seeded historical mean, cached | Calc-02 |
-| `src/lib/ml/occupancy.ts` | 4-tier with hysteresis | S-02 |
-| `src/lib/services/chatbot-service.ts` | Grounded chatbot (no hallucination) | C-03 |
-| `src/lib/services/alert-service.ts` | Alert generation + verification | S-03, O-02 |
-| `src/components/map/fleet-map.tsx` | The live map (clustering, smooth updates) | C-01 |
-| `src/app/api/cron/sim-tick/route.ts` | Vercel Cron entry — advances the sim | S-01 |
-| `mini-services/socket/index.ts` | socket.io service for live updates | RT-01, RT-02 |
+| `public/app/js/core.js` | Shared state + `const api = origin + '/api'` | Old project (kept) |
+| `public/app/js/map.js` | Leaflet map, markers, polylines, clustering | Old project (kept + improved) |
+| `public/app/js/mobile.js` | Commuter app logic (tabs, home, routes, chat) | Old project (kept + 5th tab added) |
+| `public/app/css/mobile.css` | Phone frame, tabs, hero card, chat styling | Old project (kept) |
+| `prisma/schema.prisma` | 13-model DB schema | New (from concept) |
+| `src/lib/simulator.ts` | Seeded fleet engine | New (replaces demo_simulator.py) |
+| `src/lib/services/chatbot-service.ts` | Grounded heuristic chatbot | New (consolidates 5 old files) |
+| `src/app/api/` | All REST API routes | New (replaces FastAPI routes.py) |
+| `mini-services/socket/index.ts` | socket.io live updates | New |
 
 ---
 
-## 3. Route groups (the 3 apps)
+## 3. How the old JS talks to the new backend
 
-Next.js route groups `(name)` don't affect the URL but let each app have its own layout:
+The old JS files use a simple pattern in `core.js`:
 
-| Route group | URL prefix | Layout |
-|---|---|---|
-| `(commuter)` | `/` | Header + bottom nav (mobile-first) |
-| `(operator)` | `/operator` | Top nav + simple sidebar |
-| `(regulator)` | `/regulator` | Top nav only (simple page) |
-
-A user navigates between them via links in the header/profile menu. One Vercel project, one
-domain.
-
----
-
-## 4. API routes
-
-All under `src/app/api/`. Versioned `/api/v1/` for the main API; `/api/cron/` for Vercel
-Cron; `/api/health` + `/api/ready` for probes.
-
-**Read routes** (Edge runtime, fast):
-- `GET /api/v1/fleet` — live fleet (Redis-cached)
-- `GET /api/v1/fleet/:id` — single vehicle
-- `GET /api/v1/routes` — route list
-- `GET /api/v1/routes/:id` — route detail + geometry
-- `GET /api/v1/eta/:id` — ETA to remaining stops
-- `GET /api/v1/demand/forecast` — demand forecast
-- `GET /api/v1/alerts` — alerts list
-- `GET /api/v1/places` — place search (Photon proxy)
-
-**Write routes** (Node.js runtime):
-- `POST /api/v1/chatbot` — chatbot query
-- `POST /api/v1/trip-suggestions` — trip planning
-- `POST /api/v1/edge/telemetry` — sim telemetry ingest
-- `POST /api/v1/alerts/:id/{acknowledge,verify,false-alarm}` — verification workflow
-- `POST/PUT/DELETE /api/v1/admin/vehicles` — vehicle CRUD
-- `POST/PUT/DELETE /api/v1/admin/routes` — route CRUD (optional)
-
-**Cron + probes**:
-- `POST /api/cron/sim-tick` — Vercel Cron (every minute)
-- `GET /api/health` — liveness
-- `GET /api/ready` — readiness (DB + KV)
-
----
-
-## 5. The simulator
-
-`src/lib/simulator.ts` is a pure function:
-
-```ts
-type SimState = {
-  vehicles: Array<{
-    vehicleId: string
-    routeId: string
-    positionIndex: number  // index into the route polyline
-    position: { lat: number; lon: number }
-    occupancy: number
-    tier: 'available' | 'filling' | 'at_capacity' | 'overloaded'
-    tierHeldSince: number  // for hysteresis
-    speedKph: number
-    lastUpdate: number  // epoch ms
-  }>
-}
-
-// Pure: same input → same output. Seeded RNG.
-function tick(state: SimState, dtSeconds: number, seed: number): SimState
+```js
+const api = `${location.origin}/api`;
+// ...
+const response = await fetch(api + path, options);
 ```
 
-The cron route calls `tick()` 12 times per invocation (12 × 5s = 1 minute of sim time), writes
-the resulting telemetry to DB + Redis, and publishes position updates to socket.io.
+This means calls like `fetch(api + '/fleet')` resolve to `http://localhost:3000/api/fleet` —
+which is exactly where the new Next.js API route `src/app/api/fleet/route.ts` serves.
 
----
-
-## 6. The socket.io mini-service
-
-`mini-services/socket/` is a standalone Bun project:
-
-```
-mini-services/socket/
-├── package.json    # socket.io, @socket.io/redis-adapter, @upstash/redis
-├── index.ts        # the server (~80 lines)
-└── README.md       # explains XTransformPort=3001
-```
-
-**`index.ts`:**
-- Creates a socket.io server on port 3001.
-- Uses the Redis adapter (Vercel KV) so multiple instances share state.
-- On connection: verifies JWT (or demo mode), joins rooms (bbox tile for commuters, operator
-  ID for operators).
-- Subscribes to Redis `pubsub:fleet:*` + `pubsub:alerts:*`; emits to the relevant rooms.
-
-**Client connects via:** `io("/?XTransformPort=3001")` — per the gateway constraint.
-
-**Deployment:** The socket.io service needs a persistent process host (Vercel serverless
-can't hold WS). Options: Render.com free web service, Railway, Fly.io. ~$5/month or free tier.
-For a zero-budget fallback, use TanStack Query polling (5s) and skip the socket.io service.
-
----
-
-## Next
-
-- [`07-ui-ux-design.md`](./07-ui-ux-design.md) — where each feature lives in the UI
+**Key principle:** the new API routes match the old `/api/...` paths. Where response shapes
+differ (new fields like `direction`, `vehicleType`), the old JS is updated to consume them.
+Where the old API had paths the new one doesn't (e.g., `/api/database/reset`), those are
+simply not implemented (they were unauthenticated destructive endpoints — good riddance).

@@ -205,17 +205,26 @@ The operator console receives new alerts in real time.
 This is a **solo portfolio project**, not a production system. Buildable in ~8 days of
 part-time work.
 
+### Approach: hybrid (old UI + new backend)
+
+The old LoadSense project's **frontend** (HTML/CSS/JS in `app/`) is **kept and improved**.
+The **backend** is **rewritten** from Python/FastAPI to **Next.js 16 full-stack** (API routes
+in TypeScript, Prisma ORM, Vercel-native deployment). This gives us the best of both worlds:
+the polished UI that already works, and a modern, type-safe, Vercel-deployable backend that
+fixes the old project's 50 production-readiness failures.
+
 ### In scope
 
-- **One Next.js 16 app**, three route groups: `/` (commuter — the showcase), `/operator`
-  (minimal console), `/regulator` (optional simple page)
-- **Commuter app**: live map, ETA, route list, chatbot, trip planner, dark mode, responsive
-- **Operator console (minimal)**: fleet table, alerts list with verification, vehicle CRUD,
-  route list
-- **Simulation**: seeded ~15 vehicles on ~6 Cebu routes, real-time movement, 4-tier occupancy,
-  alert generation
-- **Real backend**: API routes (Edge + Node.js runtimes), Prisma + Vercel Postgres, Vercel KV
-  (Redis), socket.io mini-service
+- **Existing HTML/CSS/JS frontend** (from old project) — kept as-is in `public/`, improved
+  with: 5th Menu tab, direction arrows, map theme switcher, 4-tier legend, teal polylines,
+  SIM badge, sequenced vehicle-add form
+- **New Next.js 16 backend** — API routes replacing FastAPI, same `/api/...` paths so the
+  old JS works with minimal changes
+- **Prisma + SQLite** (dev) / **Vercel Postgres** (deploy) — replaces raw sqlite3 + 5-file
+  fan-out
+- **Vercel KV** (Redis) — live state cache, socket.io adapter
+- **socket.io mini-service** — live fleet updates (replaces 3-30s polling)
+- **Vercel Cron** — simulator tick (replaces daemon thread)
 - **Deploy**: Vercel (Postgres + KV + Cron + Sentry), region `sin1`
 
 ### Out of scope (deliberately cut)
@@ -257,18 +266,17 @@ part-time work.
 
 ## 6. Build philosophy
 
-1. **Small and shippable.** Every step builds in 1–3 hours. If it takes longer, split it.
-2. **Honest.** Sim data is labeled "SIM". No fake CV. No misleading claims. The portfolio
-   piece is the *quality of the improvement*, not fake features.
-3. **Polished where it matters.** The commuter map + chatbot + trip planner should look great.
-   The operator console should be functional and clean but doesn't need to be beautiful.
-4. **Vercel-native.** Use Vercel's built-in everything (Postgres, KV, Cron, Edge runtime,
-  Sentry). Don't fight the platform.
-5. **Fix the seven problems.** Every decision traces back to fixing one of the seven original
-   problems listed above.
-6. **Plan the little things.** Database fields, types, relationships, how data is stored and
-   fetched — these are planned in [`03-data-model.md`](./03-data-model.md) before any code,
-   because changing the schema later means changing every file that touches it.
+1. **Don't rebuild what works.** The old project's UI (HTML/CSS/JS) is polished and
+   functional. Keep it, improve it, don't rewrite it in React.
+2. **Rewrite what's broken.** The old backend (Python/FastAPI, 5 SQLite files, daemon
+   thread, dead chatbot code, pickle RCE) is rebuilt in Next.js/TypeScript/Prisma.
+3. **Same API paths.** The old JS calls `/api/fleet`, `/api/routes`, `/api/chatbot`, etc.
+   The new Next.js backend matches these paths so the JS needs minimal changes.
+4. **Honest.** Sim data is labeled "SIM". No fake CV. No misleading claims.
+5. **Polished where it matters.** The map, chatbot, and trip planner should look great.
+6. **Vercel-native.** Next.js API routes, Vercel Postgres, Vercel KV, Vercel Cron.
+7. **Fix the seven problems.** Every decision traces back to fixing one of the seven
+   original problems.
 
 ---
 
