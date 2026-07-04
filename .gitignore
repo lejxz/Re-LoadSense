@@ -52,3 +52,19 @@ prompt
 server.log
 # Skills directory
 /skills/
+
+# Prisma local SQLite DB
+prisma/*.db
+prisma/*.db-journal
+prisma/dev.db*
+db/*.db
+db/*.db-journal
+
+# Uploads (sim route imports etc.)
+/uploads/
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/

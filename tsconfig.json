@@ -9,6 +9,7 @@
     "allowJs": true,
     "skipLibCheck": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "noEmit": true,
     "noImplicitAny": false,
     "esModuleInterop": true,
@@ -37,6 +38,9 @@
     ".next/dev/types/**/*.ts"
   ],
   "exclude": [
-    "node_modules"
+    "node_modules",
+    "skills",
+    "examples",
+    "mini-services"
   ]
 }

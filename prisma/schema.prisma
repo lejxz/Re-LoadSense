@@ -1,8 +1,9 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// Re-LoadSense Prisma schema
+// See concept/03-data-model.md for the full field-level spec + reasoning.
+//
+// Dev: SQLite (file:./db/custom.db). Production: Vercel Postgres (provider swap).
+// Note: SQLite doesn't enforce arrays (String[]) — we store as JSON string in dev.
+//       The Prisma client abstracts this; just be aware for raw queries.
 
 generator client {
   provider = "prisma-client-js"
@@ -13,20 +14,261 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+// ── Tenancy ──
+
+model Country {
+  code            String     @id
+  name            String
+  currency        String     @default("PHP")
+  defaultLanguage String     @default("en")
+  createdAt       DateTime   @default(now())
+  operators       Operator[]
+  routes          Route[]
+  users           User[]
+  vehicles        Vehicle[]
+  places          Place[]
 }
 
-model Post {
+model Operator {
+  id          String     @id @default(cuid())
+  name        String
+  countryCode String
+  licenseNo   String
+  status      String     @default("active") // active | suspended
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+  country     Country    @relation(fields: [countryCode], references: [code])
+  vehicles    Vehicle[]
+  users       User[]
+
+  @@index([countryCode])
+}
+
+// ── Routes ──
+
+model Route {
+  id                  String        @id @default(cuid())
+  code                String
+  name                String
+  tag                 String?
+  countryCode         String
+  region              String?
+  originName          String?
+  destinationName     String?
+  distanceKm          Float?
+  capacity            Int           @default(20)
+  allowedVehicleTypes String        @default("jeepney") // JSON array in SQLite: ["jeepney","minibus"]
+  routeType           String        @default("linear") // linear | loop — see §4.2
+  minFare             Float         @default(13.0)
+  farePerKm           Float         @default(2.25)
+  status              String        @default("active") // active | inactive
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+  country             Country       @relation(fields: [countryCode], references: [code])
+  points              RoutePoint[]
+  vehicles            Vehicle[]
+  alerts              OperatorAlert[]
+
+  @@unique([code, countryCode])
+  @@index([countryCode])
+  @@index([region])
+}
+
+model RoutePoint {
+  id       String  @id @default(cuid())
+  routeId  String
+  seq      Int
+  lat      Float
+  lon      Float
+  isStop   Boolean @default(false)
+  stopName String?
+  route    Route   @relation(fields: [routeId], references: [id], onDelete: Cascade)
+
+  @@unique([routeId, seq])
+  @@index([routeId])
+}
+
+// ── Vehicles + Devices ──
+
+model Vehicle {
+  id             String         @id @default(cuid())
+  vehicleCode    String         @unique
+  plateNo        String
+  vehicleType    String         // jeepney | minibus | bus | uv_express — must be in route.allowedVehicleTypes
+  brand          String?
+  model          String?
+  year           Int?
+  driver         String?
+  registrationNo String?
+  operatorId     String
+  routeId        String
+  countryCode    String
+  capacity       Int
+  status         String         @default("active") // active | inactive | maintenance
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  operator       Operator       @relation(fields: [operatorId], references: [id])
+  route          Route          @relation(fields: [routeId], references: [id])
+  country        Country        @relation(fields: [countryCode], references: [code])
+  device         Device?
+  telemetry      TelemetryLog[]
+  state          VehicleState?
+  alerts         OperatorAlert[]
+
+  @@index([operatorId])
+  @@index([routeId])
+  @@index([countryCode])
+  @@index([vehicleType])
+}
+
+model Device {
+  id              String        @id @default(cuid())
+  deviceCode      String        @unique
+  vehicleId       String?       @unique
+  apiKeyHash      String
+  firmwareVersion String        @default("sim-1.0.0")
+  modelVersion    String        @default("sim-1.0.0")
+  status          String        @default("active") // provisioned | active | revoked
+  lastHeartbeatAt DateTime?
+  createdAt       DateTime      @default(now())
+  vehicle         Vehicle?      @relation(fields: [vehicleId], references: [id])
+  telemetry       TelemetryLog[]
+
+  @@index([vehicleId])
+}
+
+// ── Telemetry ──
+
+model TelemetryLog {
+  id             String   @id @default(cuid())
+  vehicleId      String
+  deviceId       String
+  timestamp      DateTime
+  lat            Float
+  lon            Float
+  accuracyM      Float   @default(10)
+  speedKph       Float
+  heading        Float?
+  occupancy      Int
+  tier           String   // available | filling | at_capacity | overloaded
+  boarded        Int      @default(0)
+  alighted       Int      @default(0)
+  signalQuality  String   @default("good")
+  source         String   @default("simulator") // simulator | device
+  seq            Int
+  createdAt      DateTime @default(now())
+  vehicle        Vehicle  @relation(fields: [vehicleId], references: [id])
+  device         Device   @relation(fields: [deviceId], references: [id])
+
+  @@index([vehicleId, timestamp])
+  @@index([timestamp])
+  @@index([deviceId])
+}
+
+model VehicleState {
+  vehicleId       String   @id
+  lat             Float
+  lon             Float
+  speedKph        Float
+  heading         Float?
+  direction       String   @default("forward") // forward | backward — see §4.2
+  positionIndex   Int      @default(0)
+  occupancy       Int
+  tier            String
+  lastTelemetryAt DateTime
+  online          Boolean  @default(true)
+  updatedAt       DateTime @updatedAt
+  vehicle         Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@index([tier])
+  @@index([online])
+}
+
+// ── Alerts + verification workflow ──
+
+model OperatorAlert {
+  id              String    @id @default(cuid())
+  vehicleId       String
+  routeId         String
+  type            String    // overload | route_deviation | speed_anomaly | signal_loss
+  severity        String    // low | medium | high
+  status          String    @default("open") // open | acknowledged | verified | false_alarm
+  evidence        String    // JSON: telemetry snapshot
+  raisedAt        DateTime  @default(now())
+  acknowledgedAt  DateTime?
+  acknowledgedBy  String?
+  resolvedAt      DateTime?
+  resolvedBy      String?
+  resolutionNote  String?
+  vehicle         Vehicle   @relation(fields: [vehicleId], references: [id])
+  route           Route     @relation(fields: [routeId], references: [id])
+  feedback        OperatorFeedback[]
+
+  @@index([vehicleId, status])
+  @@index([status])
+  @@index([type])
+  @@index([raisedAt])
+}
+
+model OperatorFeedback {
+  id      String   @id @default(cuid())
+  alertId String
+  userId  String
+  action  String   // acknowledge | verify | false_alarm
+  note    String?
+  at      DateTime @default(now())
+  alert   OperatorAlert @relation(fields: [alertId], references: [id])
+
+  @@index([alertId])
+}
+
+// ── Users + chatbot ──
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String?
+  passwordHash String?
+  role         String    @default("commuter") // commuter | operator | admin
+  operatorId   String?
+  countryCode  String    @default("PH")
+  status       String    @default("active")
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  operator     Operator? @relation(fields: [operatorId], references: [id])
+  country      Country   @relation(fields: [countryCode], references: [code])
+
+  @@index([operatorId])
+}
+
+model ChatbotQuery {
   id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  authorId  String
+  userId    String?
+  sessionId String
+  query     String
+  response  String
+  intent    String?
+  entities  String?  // JSON
+  language  String   @default("en")
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([createdAt])
+}
+
+// ── Place search cache (two-layer: Redis hot + this table warm) ──
+
+model Place {
+  id          String   @id @default(cuid())
+  query       String   // lowercase search query
+  name        String
+  lat         Float
+  lon         Float
+  placeType   String?
+  countryCode String   @default("PH")
+  createdAt   DateTime @default(now())
+  country     Country  @relation(fields: [countryCode], references: [code])
+
+  @@unique([query, countryCode])
+  @@index([countryCode])
 }
