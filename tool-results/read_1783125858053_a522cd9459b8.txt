@@ -1,0 +1,705 @@
+     1→
+     2→function findNearestRoute(lat, lon) {
+     3→    if (!state.routes || !state.routes.length) return null;
+     4→    let best = null;
+     5→    let bestD = Infinity;
+     6→    for (const r of state.routes) {
+     7→      const points = (r.polyline || []).map(p => [Number(p.latitude), Number(p.longitude)]);
+     8→      for (const [plat, plon] of points) {
+     9→        const d = haversineMeters(lat, lon, plat, plon);
+    10→        if (d < bestD) { bestD = d; best = r.route; }
+    11→      }
+    12→    }
+    13→    // threshold 600m to auto-select
+    14→    return bestD < 600 ? best : null;
+    15→  }
+    16→
+    17→  function setupRecenterButtons() {
+    18→    const recenter = qs('recenterBtn');
+    19→    const opRecenter = qs('opRecenterBtn');
+    20→    if (recenter) recenter.addEventListener('click', () => {
+    21→      const map = state.maps['mobileMap'];
+    22→      if (!map) return;
+    23→      if (state.lastPosition) {
+    24→        map.setView([state.lastPosition.latitude, state.lastPosition.longitude], 15);
+    25→      } else {
+    26→        fitRoute('mobileMap', state.selectedRoute);
+    27→      }
+    28→    });
+    29→    if (opRecenter) opRecenter.addEventListener('click', () => {
+    30→      const map = state.maps['operatorMap'];
+    31→      if (!map) return;
+    32→      fitFleet('operatorMap');
+    33→    });
+    34→  }
+    35→
+    36→  function fitRoute(containerId, routeId) {
+    37→    const map = state.maps[containerId];
+    38→    const route = state.routes.find(item => item.route === routeId);
+    39→    const points = (route?.polyline || []).filter(isMapCoordinate).map(point => [Number(point.latitude), Number(point.longitude)]);
+    40→    if (map && points.length) {
+    41→      try { map.fitBounds(L.latLngBounds(points), { maxZoom: 15, padding: [28, 28] }); } catch (e) {}
+    42→    }
+    43→  }
+    44→
+    45→  function fitFleet(containerId) {
+    46→    const map = state.maps[containerId];
+    47→    const points = state.vehicles.filter(isMapCoordinate).map(vehicle => [Number(vehicle.latitude), Number(vehicle.longitude)]);
+    48→    if (map && points.length) {
+    49→      try { map.fitBounds(L.latLngBounds(points), { maxZoom: 15, padding: [28, 28] }); } catch (e) {}
+    50→    }
+    51→  }
+    52→
+    53→  function previewRoute(routeId, containerId = "operatorMap") {
+    54→    const route = state.routes.find(item => item.route === routeId);
+    55→    if (!route) return;
+    56→    state.selectedRoute = routeId;
+    57→    const modal = qs("routePreviewModal");
+    58→    if (modal && containerId === "routePreviewMap") {
+    59→      modal.classList.remove("hidden");
+    60→      qs("routePreviewTitle").textContent = routeDisplayTitle(route);
+    61→      const summary = routeSummary(route);
+    62→      qs("routePreviewMeta").textContent = `${cityName(route)} - ${summary.stopCount} stops - ${summary.vehicleCount} live PUVs`;
+    63→    }
+    64→    drawMap(containerId, routeId);
+    65→    setTimeout(() => {
+    66→      fitRoute(containerId, routeId);
+    67→      if (containerId === "routePreviewMap" && state.maps[containerId]) {
+    68→        state.maps[containerId].invalidateSize();
+    69→      }
+    70→    }, 120);
+    71→  }
+    72→
+    73→  function zoomVehicle(vehicleId) {
+    74→    const vehicle = state.vehicles.find(item => item.vehicle_id === vehicleId);
+    75→    if (!vehicle || !isMapCoordinate(vehicle)) return;
+    76→    state.selectedVehicleId = vehicleId;
+    77→    state.selectedRoute = vehicle.route;
+    78→    if (state.maps.operatorMap) activateOperatorTab("opsOverview");
+    79→    if (state.maps.mobileMap) activateMobileTab("mapTab");
+    80→    drawMap(state.maps.operatorMap ? "operatorMap" : "mobileMap", vehicle.route);
+    81→    const map = state.maps.operatorMap || state.maps.mobileMap;
+    82→    if (map) {
+    83→      setTimeout(() => {
+    84→        map.setView([Number(vehicle.latitude), Number(vehicle.longitude)], 17);
+    85→      }, 100);
+    86→    }
+    87→  }
+    88→
+    89→  function renderRoutesAdmin() {
+    90→    const container = qs('routesTable');
+    91→    if (!container) return;
+    92→    
+    93→    let displayRoutes = state.routes || [];
+    94→    if (state.adminRouteQuery) {
+    95→      const q = state.adminRouteQuery.toLowerCase();
+    96→      displayRoutes = displayRoutes.filter(r => 
+    97→        (r.route && r.route.toLowerCase().includes(q)) || 
+    98→        (r.name && r.name.toLowerCase().includes(q))
+    99→      );
+   100→    }
+   101→    if (state.countryFilter && state.countryFilter !== "all") {
+   102→      const c = state.countryFilter.toLowerCase();
+   103→      displayRoutes = displayRoutes.filter(r => r.country && r.country.toLowerCase() === c);
+   104→    }
+   105→    if (state.adminRegionFilter) {
+   106→      const p = state.adminRegionFilter.toLowerCase();
+   107→      displayRoutes = displayRoutes.filter(r => r.region && r.region.toLowerCase().includes(p));
+   108→    }
+   109→    const regionFilter = qs('regionFilter');
+   110→    if (regionFilter) {
+   111→      const allRoutesForCountry = state.routes ? state.routes.filter(r => !state.countryFilter || state.countryFilter === "all" || (r.country && r.country.toLowerCase() === state.countryFilter.toLowerCase())) : [];
+   112→      const uniqueRegions = [...new Set(allRoutesForCountry.map(r => r.region).filter(Boolean))].sort();
+   113→      regionFilter.innerHTML = `<option value="">All regions</option>` + uniqueRegions.map(p => `<option value="${escapeHtml(p)}"${state.adminRegionFilter === p ? " selected" : ""}>${escapeHtml(p)}</option>`).join('');
+   114→    }
+   115→
+   116→    if (!displayRoutes.length) {
+   117→      container.innerHTML = '<p class="empty-copy">No routes found.</p>';
+   118→      return;
+   119→    }
+   120→    container.innerHTML = displayRoutes.map(r => `
+   121→      <article class="route-card">
+   122→        <div class="route-card-admin-row">
+   123→          <div>
+   124→            <h3>${escapeHtml(r.route)} ${escapeHtml(r.name.replace(" - ", " → "))}</h3>
+   125→            <p>${(r.stops||[]).length} stops</p>
+   126→          </div>
+   127→          <div>
+   128→            <button class="button secondary edit-route" data-route="${escapeHtml(r.route)}">Edit</button>
+   129→            <button class="button route-preview-button" data-route-preview="${escapeHtml(r.route)}">Preview</button>
+   130→            <button class="button delete-route" data-route="${escapeHtml(r.route)}">Delete</button>
+   131→          </div>
+   132→        </div>
+   133→      </article>
+   134→    `).join('');
+   135→    document.querySelectorAll('.edit-route').forEach(btn => btn.addEventListener('click', () => editRoute(btn.dataset.route)));
+   136→    document.querySelectorAll('[data-route-preview]').forEach(btn => btn.addEventListener('click', e => {
+   137→      previewRoute(btn.dataset.routePreview, 'routePreviewMap');
+   138→    }));
+   139→    document.querySelectorAll('.delete-route').forEach(btn => {
+   140→      btn.addEventListener('click', async () => {
+   141→        const route = btn.dataset.route;
+   142→        const confirmed = await confirmAction({
+   143→          title: "Delete route",
+   144→          message: `Delete route ${route}?`,
+   145→          confirmText: "Delete",
+   146→          danger: true,
+   147→        });
+   148→        if (!confirmed) return;
+   149→        const response = await fetch(api + `/routes/${route}`, { method: 'DELETE' });
+   150→        if (!response.ok) {
+   151→          showToast(await response.text());
+   152→          return;
+   153→        }
+   154→        await refreshData({ includeAuxiliary: false });
+   155→        renderOperator();
+   156→        qs("routeModal")?.classList.add("hidden");
+   157→        if (typeof showToast === "function") showToast("Route deleted.");
+   158→      });
+   159→    });
+   160→  }
+   161→
+   162→  const routeTypeOptions = ["BRT", "Bus", "City Bus", "Ferry", "FX", "Jeepney", "Minibus", "Shuttle", "Train", "UV Express", "Other"];
+   163→  const routePointTypes = [
+   164→    { value: "alight_or_board_stop", label: "Alight or Board Stop" },
+   165→    { value: "end_of_route", label: "End of Route" },
+   166→    { value: "origin", label: "Origin" },
+   167→    { value: "road_segment", label: "Road Segment" },
+   168→    { value: "waypoint", label: "Waypoint" },
+   169→  ];
+   170→
+   171→  function setupRouteTypeSelect() {
+   172→    const select = qs("routeType");
+   173→    if (select && !select.options.length) {
+   174→      select.innerHTML = routeTypeOptions.map(type => `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join("");
+   175→      select.value = "Jeepney";
+   176→    }
+   177→    qs("addRoutePoint")?.addEventListener("click", () => addRoutePointRow());
+   178→    qs("hintButton")?.addEventListener("click", () => qs("routeHint")?.classList.toggle("is-visible"));
+   179→    qs("previewRoute")?.addEventListener("click", () => previewRoutePointRows());
+   180→  }
+   181→
+   182→  function parseGeneratedRouteName(route) {
+   183→    const name = String(route?.name || "");
+   184→    const match = name.match(/^\s*(.*?)\s*-\s*(.*?)\s*\|\s*(.*?)\s*(?:→|â†’|->)\s*(.*?)\s*$/);
+   185→    if (!match) return {};
+   186→    return {
+   187→      tag: match[1]?.trim(),
+   188→      route_type: match[2]?.trim(),
+   189→      origin_name: match[3]?.trim(),
+   190→      destination_name: match[4]?.trim(),
+   191→    };
+   192→  }
+   193→
+   194→  function normalizeRouteEditPoints(route) {
+   195→    const source = route.points && route.points.length ? route.points : route.polyline || [];
+   196→    return source.map((point, index, arr) => ({
+   197→      sequence_order: Number(point.sequence_order || index + 1),
+   198→      latitude: Number(point.latitude),
+   199→      longitude: Number(point.longitude),
+   200→      point_type: point.point_type || (index === 0 ? "origin" : index === arr.length - 1 ? "end_of_route" : "waypoint"),
+   201→      label: point.label || point.name || "",
+   202→    })).filter(point => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+   203→  }
+   204→
+   205→  function setInputValue(id, value) {
+   206→    const element = qs(id);
+   207→    if (element) element.value = value ?? "";
+   208→  }
+   209→
+   210→  function editRoute(routeId) {
+   211→    const route = state.routes.find(item => item.route === routeId);
+   212→    if (!route) return;
+   213→    const parsed = parseGeneratedRouteName(route);
+   214→    const tag = route.tag || parsed.tag || route.route || "";
+   215→    const type = route.route_type || route.type || parsed.route_type || "Jeepney";
+   216→    setupRouteTypeSelect();
+   217→    if (qs("routeType") && ![...qs("routeType").options].some(option => option.value === type)) {
+   218→      qs("routeType").add(new Option(type, type));
+   219→    }
+   220→    setInputValue("routeId", tag);
+   221→    setInputValue("routeType", type);
+   222→    setInputValue("routeOrigin", route.origin_name || parsed.origin_name || "");
+   223→    setInputValue("routeDestination", route.destination_name || parsed.destination_name || "");
+   224→    setInputValue("routeRegion", route.region || route.zone || route.city || "");
+   225→    setInputValue("routeDistance", route.distance_km ?? "");
+   226→    setInputValue("routeMinimumFare", route.minimum_fare ?? "");
+   227→    setInputValue("routeFarePerKm", route.fare_per_km ?? "");
+   228→    setInputValue("routeDescription", route.description || "");
+   229→    setRoutePointRows(normalizeRouteEditPoints(route));
+   230→    qs("routeFormErrors")?.classList.add("hidden");
+   231→    const modal = qs("routeModal");
+   232→    if (modal) {
+   233→      qs("routeModalTitle").textContent = "Edit Route";
+   234→      modal.classList.remove("hidden");
+   235→    }
+   236→  }
+   237→
+   238→
+   239→  function setRoutePointRows(points) {
+   240→    const container = qs("routePointsContainer");
+   241→    if (!container) return;
+   242→    container.innerHTML = "";
+   243→    const seed = points.length ? points : [
+   244→      { sequence_order: 1, latitude: "", longitude: "", point_type: "origin", label: "Origin" },
+   245→      { sequence_order: 2, latitude: "", longitude: "", point_type: "end_of_route", label: "End of Route" },
+   246→    ];
+   247→    seed.forEach(point => addRoutePointRow(point));
+   248→    updateRoutePointSequence();
+   249→  }
+   250→
+   251→  function addRoutePointRow(point = {}) {
+   252→    const container = qs("routePointsContainer");
+   253→    if (!container) return;
+   254→    const row = document.createElement("div");
+   255→    row.className = "route-point-row";
+   256→    row.innerHTML = `
+   257→      <span class="point-order route-point-sequence">${escapeHtml(point.sequence_order || container.children.length + 1)}</span>
+   258→      <input class="route-point-lat" type="number" step="0.000001" value="${escapeHtml(point.latitude ?? "")}" placeholder="Latitude" />
+   259→      <input class="route-point-lon" type="number" step="0.000001" value="${escapeHtml(point.longitude ?? "")}" placeholder="Longitude" />
+   260→      <select class="route-point-type">${routePointTypes.map(type => `<option value="${escapeHtml(type.value)}"${(point.point_type || "waypoint") === type.value ? " selected" : ""}>${escapeHtml(type.label)}</option>`).join("")}</select>
+   261→      <input class="route-point-label" value="${escapeHtml(point.label || "")}" placeholder="Label" />
+   262→      <button class="mini-action danger" type="button" data-remove-point>Delete</button>
+   263→    `;
+   264→    row.querySelector("[data-remove-point]").addEventListener("click", () => {
+   265→      row.remove();
+   266→      updateRoutePointSequence();
+   267→    });
+   268→    container.appendChild(row);
+   269→    updateRoutePointSequence();
+   270→  }
+   271→
+   272→  function updateRoutePointSequence() {
+   273→    qs("routePointsContainer")?.querySelectorAll(".route-point-row").forEach((row, index) => {
+   274→      row.querySelector(".route-point-sequence").textContent = index + 1;
+   275→    });
+   276→  }
+   277→
+   278→  function collectRoutePointRows() {
+   279→    return [...(qs("routePointsContainer")?.querySelectorAll(".route-point-row") || [])]
+   280→      .map((row, index) => ({
+   281→        sequence_order: index + 1,
+   282→        latitude: Number(row.querySelector(".route-point-lat").value),
+   283→        longitude: Number(row.querySelector(".route-point-lon").value),
+   284→        point_type: row.querySelector(".route-point-type").value || "waypoint",
+   285→        label: row.querySelector(".route-point-label").value.trim(),
+   286→      }))
+   287→      .filter(point => Number.isFinite(point.latitude) && Number.isFinite(point.longitude));
+   288→  }
+   289→
+   290→  function previewRoutePointRows() {
+   291→    const route = qs("routeId").value.trim() || "__preview__";
+   292→    const routeType = qs("routeType").value || "Jeepney";
+   293→    const originName = qs("routeOrigin").value.trim();
+   294→    const destinationName = qs("routeDestination").value.trim();
+   295→    const points = collectRoutePointRows();
+   296→    if (points.length < 2) {
+   297→      showToast("Add at least two valid coordinates to preview.");
+   298→      return;
+   299→    }
+   300→    const existing = state.routes.find(item => item.route === route);
+   301→    const preview = {
+   302→      route,
+   303→      // Auto-generated route/vehicle display names must remain: TAG - TYPE | ORIGIN → END.
+   304→      name: `${route} - ${routeType} | ${originName} → ${destinationName}`,
+   305→      country: selectedCountryCode(),
+   306→      city: qs("routeCity")?.value || "",
+   307→      polyline: points.map(point => ({ latitude: point.latitude, longitude: point.longitude })),
+   308→      points,
+   309→      stops: points,
+   310→      route_type: routeType,
+   311→      origin_name: originName,
+   312→      destination_name: destinationName,
+   313→    };
+   314→    if (existing) Object.assign(existing, preview);
+   315→    else state.routes.push(preview);
+   316→    previewRoute(route, "routePreviewMap");
+   317→  }
+   318→
+   319→  async function initRoutesAdmin() {
+   320→    const save = qs('saveRoute');
+   321→    const clear = qs('clearRoute');
+   322→    const exportBtn = qs('exportRoutes');
+   323→    const importBtn = qs('importRoutesBtn');
+   324→    const importArea = qs('importRoutes');
+   325→    const routeFile = qs('routeFile');
+   326→    const previewRouteFile = qs('previewRouteFile');
+   327→    const commitRouteFile = qs('commitRouteFile');
+   328→    const routeImportPreview = qs('routeImportPreview');
+   329→    setupRouteTypeSelect();
+   330→    setRoutePointRows([]);
+   331→
+   332→    qs("addRouteBtn")?.addEventListener("click", () => {
+   333→      qs("routeForm")?.reset();
+   334→      setRoutePointRows([]);
+   335→      const modal = qs("routeModal");
+   336→      if (modal) {
+   337→        qs("routeModalTitle").textContent = "Add Route";
+   338→        modal.classList.remove("hidden");
+   339→      }
+   340→    });
+   341→    qs("closeRouteModal")?.addEventListener("click", () => qs("routeModal")?.classList.add("hidden"));
+   342→    qs("closeRoutePreviewModal")?.addEventListener("click", () => qs("routePreviewModal")?.classList.add("hidden"));
+   343→    if (save) {
+   344→      save.addEventListener('click', async () => {
+   345→        const route = qs('routeId').value.trim();
+   346→        const routeType = qs('routeType').value.trim();
+   347→        const originName = qs('routeOrigin').value.trim();
+   348→        const destinationName = qs('routeDestination').value.trim();
+   349→        // Auto-generated route/vehicle display names must remain: TAG - TYPE | ORIGIN → END.
+   350→        const name = `${route} - ${routeType} | ${originName} → ${destinationName}`;
+   351→        const points = collectRoutePointRows();
+   352→        if (!route || !routeType || !originName || !destinationName) { showToast('Route tag, type, origin, and destination are required'); return; }
+   353→        if (points.length < 2) { showToast('Add at least two coordinates.'); return; }
+   354→        const poly = points.map(point => [point.latitude, point.longitude]);
+   355→        const replace = state.routes.some(r => r.country === selectedCountryCode() && (r.route === route || r.tag === route));
+   356→        const regionVal = qs("routeRegion")?.value.trim() || "";
+   357→        const payload = {
+   358→          route,
+   359→          name,
+   360→          polyline: poly,
+   361→          country: selectedCountryCode(),
+   362→          region: regionVal,
+   363→          tag: route,
+   364→          route_type: routeType,
+   365→          origin_name: originName,
+   366→          destination_name: destinationName,
+   367→          distance_km: qs('routeDistance').value ? Number(qs('routeDistance').value) : null,
+   368→          minimum_fare: qs('routeMinimumFare') && qs('routeMinimumFare').value ? Number(qs('routeMinimumFare').value) : null,
+   369→          fare_per_km: qs('routeFarePerKm') && qs('routeFarePerKm').value ? Number(qs('routeFarePerKm').value) : null,
+   370→          description: qs('routeDescription').value.trim(),
+   371→          points,
+   372→        };
+   373→        const response = await fetch(api + `/routes?replace=${replace ? 'true' : 'false'}`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+   374→        if (!response.ok) { showToast(await response.text()); return; }
+   375→        qs('routeId').value = '';
+   376→        qs("routeForm")?.reset();
+   377→        setRoutePointRows([]);
+   378→        await refreshData({ includeAuxiliary: false });
+   379→        renderOperator();
+   380→        qs("routeModal")?.classList.add("hidden");
+   381→      });
+   382→    }
+   383→    if (clear) {
+   384→      clear.addEventListener('click', () => {
+   385→        qs("routeForm")?.reset();
+   386→        setRoutePointRows([]);
+   387→      });
+   388→    }
+   389→    if (exportBtn) {
+   390→      exportBtn.addEventListener('click', () => {
+   391→        const data = state.routes || [];
+   392→        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+   393→        const url = URL.createObjectURL(blob);
+   394→        const a = document.createElement('a');
+   395→        a.href = url; a.download = 'routes.json'; document.body.appendChild(a); a.click(); a.remove();
+   396→      });
+   397→    }
+   398→    async function importPastedRoutes() {
+   399→      try {
+   400→        const json = JSON.parse(importArea.value);
+   401→        if (!Array.isArray(json)) throw new Error('Expected array');
+   402→        for (const r of json) {
+   403→          const poly = (r.polyline || []).map(p => Array.isArray(p) ? p : [p.latitude, p.longitude]);
+   404→          const response = await fetch(api + '/routes?replace=true', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ route: r.route, name: r.name, polyline: poly }) });
+   405→          if (!response.ok) throw new Error(await response.text());
+   406→        }
+   407→        await refreshData({ includeAuxiliary: false });
+   408→        renderOperator();
+   409→        showToast(`Imported ${json.length} route${json.length === 1 ? '' : 's'}.`);
+   410→      } catch (e) {
+   411→        showToast('Invalid JSON: ' + e.message);
+   412→      }
+   413→    }
+   414→    if (importBtn && importArea) {
+   415→      importBtn.addEventListener('click', () => {
+   416→        const importIsVisible = importArea.classList.contains('is-visible');
+   417→        if (importIsVisible && importArea.value.trim()) {
+   418→          importPastedRoutes();
+   419→          return;
+   420→        }
+   421→        importArea.classList.toggle('is-visible');
+   422→      });
+   423→      importArea.addEventListener('change', async () => {
+   424→        if (importArea.value.trim()) await importPastedRoutes();
+   425→      });
+   426→    }
+   427→    async function uploadRouteFile(commit) {
+   428→      if (!routeFile || !routeFile.files || !routeFile.files[0]) {
+   429→        showToast('Choose a GeoJSON, CSV, or GTFS zip file first.');
+   430→        return;
+   431→      }
+   432→      const form = new FormData();
+   433→      form.append('file', routeFile.files[0]);
+   434→      form.append('commit', commit ? 'true' : 'false');
+   435→      form.append('replace', qs('replaceRoutes')?.checked ? 'true' : 'false');
+   436→      form.append('simplify_tolerance', '0.00002');
+   437→      const response = await fetch(api + '/routes/import', { method: 'POST', body: form });
+   438→      const result = await response.json();
+   439→      if (!response.ok) {
+   440→        routeImportPreview.innerHTML = `<p class="error">${escapeHtml(result.detail || 'Upload failed')}</p>`;
+   441→        return;
+   442→      }
+   443→      routeImportPreview.innerHTML = renderImportResult(result);
+   444→      if (commit && result.status === 'committed') {
+   445→        await refreshData({ includeAuxiliary: false });
+   446→        renderOperator();
+   447→      }
+   448→    }
+   449→    if (previewRouteFile) previewRouteFile.addEventListener('click', () => uploadRouteFile(false));
+   450→    if (commitRouteFile) commitRouteFile.addEventListener('click', () => uploadRouteFile(true));
+   451→  }
+   452→
+   453→  function renderImportResult(result) {
+   454→    const errors = result.errors || [];
+   455→    const routes = result.routes || [];
+   456→    if (errors.length) {
+   457→      return `<p class="error">${errors.map(escapeHtml).join('<br/>')}</p>`;
+   458→    }
+   459→    return `
+   460→      <p>${escapeHtml(result.status)} ${routes.length} route(s) from ${escapeHtml(result.filename || 'upload')}.</p>
+   461→      ${routes.slice(0, 5).map(route => `<article><strong>${escapeHtml(route.route)} ${escapeHtml(route.name.replace(" - ", " → "))}</strong><p>${(route.polyline || []).length} points</p></article>`).join('')}
+   462→    `;
+   463→  }
+   464→
+   465→  function renderDatabaseStatus() {
+   466→    const tables = state.database.tables || {};
+   467→    const stats = state.database.stats || {};
+   468→    const routeLoads = state.database.route_loads || [];
+   469→    const vehicleRoutes = state.database.vehicle_routes || [];
+   470→    const alertStatuses = state.database.alert_statuses || [];
+   471→    const recentChats = state.database.recent_chats || [];
+   472→    const maxSamples = Math.max(1, ...routeLoads.map(row => Number(row.samples || 0)));
+   473→    qs("databaseStatus").innerHTML = Object.keys(tables).length
+   474→      ? `
+   475→        <div class="db-summary-row">
+   476→          ${[
+   477→            ["Telemetry samples", stats.telemetry_samples ?? tables.telemetry_logs ?? 0],
+   478→            ["Active route groups", stats.active_vehicle_routes ?? 0],
+   479→            ["Chatbot queries", stats.chat_queries ?? tables.chatbot_queries ?? 0],
+   480→            ["Open alerts", stats.open_alerts ?? 0],
+   481→          ].map(([label, value]) => `
+   482→            <article>
+   483→              <span>${escapeHtml(label)}</span>
+   484→              <strong>${escapeHtml(value)}</strong>
+   485→            </article>
+   486→          `).join("")}
+   487→        </div>
+   488→        <div class="db-visual-grid">
+   489→          <section>
+   490→            <h3>Telemetry by route</h3>
+   491→            <div class="db-bars">
+   492→              ${routeLoads.length ? routeLoads.map(row => `
+   493→                <div class="db-bar-row">
+   494→                  <span>${escapeHtml(row.route)}</span>
+   495→                  <i data-bar-width="${Math.max(8, (Number(row.samples || 0) / maxSamples) * 100)}"></i>
+   496→                  <strong>${escapeHtml(row.samples)}</strong>
+   497→                </div>
+   498→              `).join("") : `<p class="empty-copy">No telemetry samples saved yet.</p>`}
+   499→            </div>
+   500→          </section>
+   501→          <section>
+   502→            <h3>Live route load</h3>
+   503→            <div class="db-route-table">
+   504→              ${vehicleRoutes.length ? vehicleRoutes.map(row => `
+   505→                <article>
+   506→                  <span>Route ${escapeHtml(row.route)}</span>
+   507→                  <strong>${escapeHtml(row.vehicles)} PUVs</strong>
+   508→                  <p>Avg load ${escapeHtml(row.average_occupancy ?? 0)} - crowded ${escapeHtml(row.crowded ?? 0)}</p>
+   509→                </article>
+   510→              `).join("") : `<p class="empty-copy">No live vehicle states yet.</p>`}
+   511→            </div>
+   512→          </section>
+   513→        </div>
+   514→        <div class="db-visual-grid">
+   515→          <section>
+   516→            <h3>Alert status</h3>
+   517→            <div class="db-chip-row">
+   518→              ${alertStatuses.length ? alertStatuses.map(row => `<span>${escapeHtml(row.verification_status || "open")} <strong>${escapeHtml(row.count)}</strong></span>`).join("") : `<p class="empty-copy">No alert records.</p>`}
+   519→            </div>
+   520→          </section>
+   521→          <section>
+   522→            <h3>Recent chatbot queries</h3>
+   523→            <div class="db-chat-list">
+   524→              ${recentChats.length ? recentChats.map(row => `
+   525→                <article>
+   526→                  <strong>${escapeHtml(row.query)}</strong>
+   527→                  <p>${escapeHtml(row.answer)}</p>
+   528→                </article>
+   529→              `).join("") : `<p class="empty-copy">No chatbot history yet.</p>`}
+   530→            </div>
+   531→          </section>
+   532→        </div>
+   533→        <details class="db-table-counts">
+   534→          <summary>Table counts and database path</summary>
+   535→          <div class="db-summary-row compact">
+   536→            ${Object.entries(tables).map(([name, count]) => `
+   537→              <article>
+   538→                <span>${escapeHtml(name)}</span>
+   539→                <strong>${count}</strong>
+   540→              </article>
+   541→            `).join("")}
+   542→          </div>
+   543→          <p class="db-path">${escapeHtml(state.database.path || "")}</p>
+   544→        </details>
+   545→      `
+   546→      : `<p class="empty-copy">Database has not been initialized.</p>`;
+   547→    qs("databaseStatus").querySelectorAll("[data-bar-width]").forEach(bar => {
+   548→      bar.style.width = `${bar.dataset.barWidth}%`;
+   549→    });
+   550→  }
+   551→
+   552→  function renderIncidentLog() {
+   553→    qs("incidentLog").innerHTML = state.incidents.length
+   554→      ? state.incidents.slice(0, 8).map(incident => `
+   555→          <article>
+   556→            <div>
+   557→              <h3>${escapeHtml(incident.vehicle_id)} - ${escapeHtml(incident.severity).toUpperCase()}</h3>
+   558→              <p>${escapeHtml(incident.message)}</p>
+   559→              ${incident.resolution_note ? `<small>${escapeHtml(incident.resolution_note)}</small>` : ""}
+   560→            </div>
+   561→            <span>${escapeHtml((incident.verification_status || (incident.acknowledged ? "verified" : "open")).replace("_", " "))}</span>
+   562→          </article>
+   563→        `).join("")
+   564→      : `<p class="empty-copy">No incident history yet.</p>`;
+   565→  }
+   566→
+   567→  async function initOperator() {
+   568→    await loadCountries();
+   569→    await refreshData({ includeAuxiliary: false });
+   570→    renderOperator();
+   571→    refreshAuxiliaryData().then(() => renderOperator()).catch(() => {});
+   572→    await initRoutesAdmin();
+   573→    initOperatorTabs();
+   574→    qs("refreshOperator").addEventListener("click", async () => {
+   575→      await refreshData({ includeAuxiliary: false });
+   576→      renderOperator();
+   577→      refreshAuxiliaryData().then(() => renderOperator()).catch(() => {});
+   578→    });
+   579→    const fleetSearch = qs("fleetSearch");
+   580→    if (fleetSearch) {
+   581→      fleetSearch.addEventListener("input", event => {
+   582→        state.operatorFleetQuery = event.target.value.trim();
+   583→        renderOperator();
+   584→      });
+   585→    }
+   586→    const routeFilter = qs("fleetRouteFilter");
+   587→    if (routeFilter) {
+   588→      routeFilter.addEventListener("change", event => {
+   589→        state.operatorRouteFilter = event.target.value || "all";
+   590→        renderOperator();
+   591→      });
+   592→    }
+   593→
+   594→    const regionFilter = qs("regionFilter");
+   595→    if (regionFilter) {
+   596→      regionFilter.addEventListener("change", event => {
+   597→        state.adminRegionFilter = event.target.value.trim();
+   598→        renderOperator();
+   599→      });
+   600→    }
+   601→
+   602→    const provinceFilter = qs("provinceFilter");
+   603→    if (provinceFilter) {
+   604→      provinceFilter.addEventListener("change", event => {
+   605→        state.adminProvinceFilter = event.target.value.trim();
+   606→        renderOperator();
+   607→      });
+   608→    }
+   609→
+   610→    const adminRouteSearch = qs("adminRouteSearch");
+   611→    if (adminRouteSearch) {
+   612→      adminRouteSearch.addEventListener("input", event => {
+   613→        state.adminRouteQuery = event.target.value.trim();
+   614→        renderOperator();
+   615→      });
+   616→    }
+   617→    const tierFilter = qs("fleetTierFilter");
+   618→    if (tierFilter) {
+   619→      tierFilter.addEventListener("change", event => {
+   620→        state.operatorTierFilter = event.target.value || "all";
+   621→        renderOperator();
+   622→      });
+   623→    }
+   624→    qs("resetDatabaseBtn")?.addEventListener("click", async () => {
+   625→      const confirmed = await confirmAction({
+   626→        title: "Reset demo data",
+   627→        message: "Clear vehicles, routes, alerts, telemetry, and chat history?",
+   628→        confirmText: "Reset",
+   629→        danger: true,
+   630→      });
+   631→      if (!confirmed) return;
+   632→      await getJson("/database/reset", { method: "POST" });
+   633→      await refreshData({ includeAuxiliary: false });
+   634→      renderOperator();
+   635→      refreshAuxiliaryData().then(() => renderOperator()).catch(() => {});
+   636→      showToast("Demo data reset.");
+   637→    });
+   638→    qs("resetAlertsBtn")?.addEventListener("click", async () => {
+   639→      const confirmed = await confirmAction({
+   640→        title: "Reset Alerts",
+   641→        message: "Clear all alert data and reset alert simulation?",
+   642→        confirmText: "Reset",
+   643→        danger: true,
+   644→      });
+   645→      if (!confirmed) return;
+   646→      await getJson("/alerts/reset", { method: "POST" });
+   647→      await refreshData({ includeAuxiliary: false });
+   648→      renderOperator();
+   649→      showToast("Alerts reset.");
+   650→    });
+   651→    qs("resetDemandBtn")?.addEventListener("click", async () => {
+   652→      const confirmed = await confirmAction({
+   653→        title: "Reset Demand Forecasting",
+   654→        message: "Clear demand forecast and generate dynamic simulation data?",
+   655→        confirmText: "Reset",
+   656→        danger: true,
+   657→      });
+   658→      if (!confirmed) return;
+   659→      await getJson("/demand/reset", { method: "POST" });
+   660→      await refreshData({ includeAuxiliary: false });
+   661→      renderOperator();
+   662→      showToast("Demand Forecasting reset.");
+   663→    });
+   664→    const fleetCountryFilter = qs("fleetCountryFilter");
+   665→    if (fleetCountryFilter) {
+   666→      fleetCountryFilter.addEventListener("change", async event => {
+   667→        state.countryFilter = event.target.value || "all";
+   668→        await refreshData({ includeAuxiliary: false });
+   669→        renderOperator();
+   670→        refreshAuxiliaryData().then(() => renderOperator()).catch(() => {});
+   671→      });
+   672→    }
+   673→    setInterval(async () => {
+   674→      await refreshData({ includeAuxiliary: false });
+   675→      renderOperator();
+   676→    }, 15000);
+   677→    if (typeof setupVehicleModal === 'function') setupVehicleModal();
+   678→    
+   679→    ['regionFilter', 'fleetRouteFilter', 'fleetTierFilter', 'routeType', 'vehType', 'vehRegion', 'vehRoute'].forEach(id => {
+   680→      if (typeof window.makeSelectSearchable === 'function') {
+   681→        window.makeSelectSearchable(id);
+   682→      }
+   683→    });
+   684→  }
+   685→
+   686→  function initOperatorTabs() {
+   687→    document.querySelectorAll(".ops-tabs button").forEach(button => {
+   688→      button.addEventListener("click", () => activateOperatorTab(button.dataset.opsTab));
+   689→    });
+   690→  }
+   691→
+   692→  function activateOperatorTab(tabId) {
+   693→    const target = qs(tabId);
+   694→    if (!target) return;
+   695→    state.activeOperatorTab = tabId;
+   696→    document.querySelectorAll(".ops-tabs button").forEach(item => item.classList.toggle("active", item.dataset.opsTab === tabId));
+   697→    document.querySelectorAll(".ops-tab-panel").forEach(item => item.classList.toggle("active", item.id === tabId));
+   698→    renderOperator();
+   699→    setTimeout(() => {
+   700→      Object.values(state.maps).forEach(map => {
+   701→        try { map.invalidateSize(); } catch (e) {}
+   702→      });
+   703→    }, 100);
+   704→  }
+   705→

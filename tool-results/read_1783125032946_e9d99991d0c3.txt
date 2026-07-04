@@ -1,0 +1,741 @@
+     1→     1→import json
+     2→     2→import csv
+     3→     3→import io
+     4→     4→import math
+     5→     5→import zipfile
+     6→     6→from typing import Any, Optional
+     7→     7→
+     8→     8→from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
+     9→     9→from pydantic import BaseModel, validator
+    10→    10→
+    11→    11→from backend.app.core.config import default_route, get_config
+    12→    12→from backend.app.core.compat import model_to_dict, validate_model
+    13→    13→from backend.app.core.phase2 import load_demand_forecast, predict_eta_details
+    14→    14→from backend.app.core.routes import list_routes
+    15→    15→from backend.app.core.transit import search_places
+    16→    16→from backend.app.db import sqlite_store
+    17→    17→from backend.app.core.state import fleet_store
+    18→    18→from backend.app.db.models import OperatorAlert as OperatorAlertModel
+    19→    19→from backend.app.db.models import RoutePoint, Vehicle as VehicleModel
+    20→    20→from uuid import uuid4
+    21→    21→from datetime import datetime, timezone
+    22→    22→
+    23→    23→router = APIRouter()
+    24→    24→
+    25→    25→COUNTRY_NAMES = {
+    26→    26→    "ID": "Indonesia",
+    27→    27→    "MY": "Malaysia",
+    28→    28→    "PH": "Philippines",
+    29→    29→    "TH": "Thailand",
+    30→    30→    "VN": "Vietnam",
+    31→    31→}
+    32→    32→COUNTRY_NAME_VALUES = {name.upper() for name in COUNTRY_NAMES.values()} | set(COUNTRY_NAMES)
+    33→    33→
+    34→    34→
+    35→    35→def _sanitize_route_region(route: dict[str, Any]) -> dict[str, Any]:
+    36→    36→    item = dict(route)
+    37→    37→    region = str(item.get("region") or "").strip()
+    38→    38→    if region.upper() in COUNTRY_NAME_VALUES:
+    39→    39→        item["region"] = ""
+    40→    40→    return item
+    41→    41→
+    42→    42→
+    43→    43→class Telemetry(BaseModel):
+    44→    44→    vehicle_id: str
+    45→    45→    route: str = default_route()
+    46→    46→    latitude: float
+    47→    47→    longitude: float
+    48→    48→    occupancy: int
+    49→    49→    capacity: Optional[int] = None
+    50→    50→    timestamp: str
+    51→    51→    speed_kph: Optional[float] = None
+    52→    52→    heading: Optional[float] = None
+    53→    53→    signal_quality: Optional[str] = None
+    54→    54→    direction: Optional[str] = None
+    55→    55→    status: str = "active"
+    56→    56→
+    57→    57→
+    58→    58→class ChatQuery(BaseModel):
+    59→    59→    route: str = ""
+    60→    60→    query: str
+    61→    61→    country: Optional[str] = None
+    62→    62→    origin: Optional[str] = None
+    63→    63→    origin_latitude: Optional[float] = None
+    64→    64→    origin_longitude: Optional[float] = None
+    65→    65→    destination: Optional[str] = None
+    66→    66→    destination_latitude: Optional[float] = None
+    67→    67→    destination_longitude: Optional[float] = None
+    68→    68→    history: Optional[list[dict]] = None
+    69→    69→
+    70→    70→
+    71→    71→class SuggestionQuery(BaseModel):
+    72→    72→    route: str = ""
+    73→    73→    query: str = ""
+    74→    74→    country: Optional[str] = None
+    75→    75→    origin: Optional[str] = None
+    76→    76→    origin_latitude: Optional[float] = None
+    77→    77→    origin_longitude: Optional[float] = None
+    78→    78→    destination: Optional[str] = None
+    79→    79→    destination_latitude: Optional[float] = None
+    80→    80→    destination_longitude: Optional[float] = None
+    81→    81→    limit: int = 5
+    82→    82→
+    83→    83→
+    84→    84→@router.post("/telemetry")
+    85→    85→def receive_telemetry(t: Telemetry):
+    86→    86→    state = fleet_store.upsert_telemetry(t)
+    87→    87→    return {"status": "accepted", "vehicle": model_to_dict(state), "summary": fleet_store.summary()}
+    88→    88→
+    89→    89→
+    90→    90→@router.websocket("/ws/telemetry")
+    91→    91→async def websocket_telemetry_endpoint(websocket: WebSocket):
+    92→    92→    await websocket.accept()
+    93→    93→    try:
+    94→    94→        while True:
+    95→    95→            text = await websocket.receive_text()
+    96→    96→            try:
+    97→    97→                payload = validate_model(Telemetry, json.loads(text))
+    98→    98→                state = fleet_store.upsert_telemetry(payload)
+    99→    99→                await websocket.send_json({"status": "accepted", "vehicle": model_to_dict(state), "summary": fleet_store.summary()})
+   100→   100→            except Exception as exc:
+   101→   101→                await websocket.send_json({"status": "error", "message": str(exc)})
+   102→   102→    except WebSocketDisconnect:
+   103→   103→        return
+   104→   104→
+   105→   105→
+   106→   106→@router.get("/eta/{stop_id}")
+   107→   107→def get_eta(stop_id: int, time_of_day: float = 8.0, traffic_factor: float = 1.0, route: str = "04L"):
+   108→   108→    eta_details = predict_eta_details(stop_id=stop_id, time_of_day=time_of_day, traffic_factor=traffic_factor, route=route)
+   109→   109→    return {
+   110→   110→        "stop_id": stop_id,
+   111→   111→        "route": route,
+   112→   112→        "time_of_day": time_of_day,
+   113→   113→        "traffic_factor": traffic_factor,
+   114→   114→        "eta_minutes": eta_details["eta_minutes"],
+   115→   115→        "source": eta_details["source"],
+   116→   116→    }
+   117→   117→
+   118→   118→
+   119→   119→@router.get("/demand")
+   120→   120→def get_demand(country: Optional[str] = None):
+   121→   121→    return load_demand_forecast(country)
+   122→   122→
+   123→   123→
+   124→   124→@router.get("/fleet")
+   125→   125→def get_fleet(route: Optional[str] = None, country: Optional[str] = None):
+   126→   126→    if country:
+   127→   127→        country = sqlite_store.normalize_country(country)
+   128→   128→    active_vehicles = {v.vehicle_id: model_to_dict(v) for v in fleet_store.fleet()}
+   129→   129→    all_vehicles = sqlite_store.list_vehicles()
+   130→   130→    merged = []
+   131→   131→    for db_v in all_vehicles:
+   132→   132→        if route and db_v["route"] != route:
+   133→   133→            continue
+   134→   134→        if country and db_v["country"] != country:
+   135→   135→            continue
+   136→   136→        vid = db_v["vehicle_id"]
+   137→   137→        if vid in active_vehicles:
+   138→   138→            v_data = active_vehicles[vid]
+   139→   139→            # Merge static properties
+   140→   140→            v_data["driver"] = db_v["driver"]
+   141→   141→            v_data["max_occupancy"] = db_v["max_occupancy"]
+   142→   142→            v_data["capacity"] = db_v["max_occupancy"] # override capacity
+   143→   143→            for key in ["brand", "model", "plate_number", "vehicle_type", "year", "registration_number", "country"]:
+   144→   144→                v_data[key] = db_v.get(key)
+   145→   145→            merged.append(v_data)
+   146→   146→        else:
+   147→   147→            merged.append({
+   148→   148→                "vehicle_id": vid,
+   149→   149→                "country": db_v["country"],
+   150→   150→                "route": db_v["route"],
+   151→   151→                "driver": db_v["driver"],
+   152→   152→                "max_occupancy": db_v["max_occupancy"],
+   153→   153→                "capacity": db_v["max_occupancy"],
+   154→   154→                "occupancy": 0,
+   155→   155→                "tier": "offline",
+   156→   156→                "status": "offline",
+   157→   157→                "latitude": 0.0,
+   158→   158→                "longitude": 0.0,
+   159→   159→                "eta_minutes": 0.0
+   160→   160→            })
+   161→   161→    summary = {
+   162→   162→        "vehicle_count": len(merged),
+   163→   163→        "active_alerts": len([v for v in merged if v.get("route_deviation", {}).get("anomaly")]),
+   164→   164→        "average_occupancy": round(
+   165→   165→            sum(int(v.get("occupancy") or 0) for v in merged) / max(1, len(merged)),
+   166→   166→            1,
+   167→   167→        ),
+   168→   168→        "overloaded": len([v for v in merged if v.get("tier") == "blinking_red"]),
+   169→   169→    }
+   170→   170→    return {"summary": summary, "vehicles": merged}
+   171→   171→
+   172→   172→@router.get("/vehicles")
+   173→   173→def get_vehicles():
+   174→   174→    return sqlite_store.list_vehicles()
+   175→   175→
+   176→   176→@router.post("/vehicles")
+   177→   177→def create_vehicle(v: VehicleModel):
+   178→   178→    route = _route_for_vehicle(v.route, v.country)
+   179→   179→    vehicle_type = route.get("route_type") or route.get("type") or v.vehicle_type
+   180→   180→    sqlite_store.save_vehicle(
+   181→   181→        v.vehicle_id, v.country, v.route, v.driver, v.max_occupancy,
+   182→   182→        v.brand, v.model, v.plate_number, vehicle_type, v.year,
+   183→   183→        v.registration_number, v.status,
+   184→   184→    )
+   185→   185→    return {"status": "created"}
+   186→   186→
+   187→   187→@router.put("/vehicles/{vehicle_id}")
+   188→   188→def update_vehicle(vehicle_id: str, v: VehicleModel):
+   189→   189→    route = _route_for_vehicle(v.route, v.country)
+   190→   190→    vehicle_type = route.get("route_type") or route.get("type") or v.vehicle_type
+   191→   191→    sqlite_store.save_vehicle(
+   192→   192→        vehicle_id, v.country, v.route, v.driver, v.max_occupancy,
+   193→   193→        v.brand, v.model, v.plate_number, vehicle_type, v.year,
+   194→   194→        v.registration_number, v.status,
+   195→   195→    )
+   196→   196→    return {"status": "updated"}
+   197→   197→
+   198→   198→@router.delete("/vehicles/{vehicle_id}")
+   199→   199→def delete_vehicle(vehicle_id: str):
+   200→   200→    sqlite_store.delete_vehicle(vehicle_id)
+   201→   201→    return {"status": "deleted"}
+   202→   202→
+   203→   203→
+   204→   204→def _route_for_vehicle(route_id: str, country: str) -> dict[str, Any]:
+   205→   205→    return next(
+   206→   206→        (
+   207→   207→            route
+   208→   208→            for route in list_routes()
+   209→   209→            if route.get("route") == route_id and (not country or route.get("country") == country)
+   210→   210→        ),
+   211→   211→        {},
+   212→   212→    )
+   213→   213→
+   214→   214→
+   215→   215→@router.get("/alerts")
+   216→   216→def get_alerts(include_acknowledged: bool = False, limit: int = Query(100, ge=1, le=100), country: Optional[str] = None):
+   217→   217→    alerts = fleet_store.alerts(include_acknowledged=include_acknowledged)[:limit]
+   218→   218→    if country:
+   219→   219→        route_countries = {route["route"]: route.get("country") for route in list_routes()}
+   220→   220→        alerts = [alert for alert in alerts if route_countries.get(alert.route) == country]
+   221→   221→    return {"alerts": [model_to_dict(alert) for alert in alerts]}
+   222→   222→
+   223→   223→
+   224→   224→@router.post("/alerts/{alert_id}/ack")
+   225→   225→def acknowledge_alert(alert_id: str):
+   226→   226→    alert = fleet_store.acknowledge_alert(alert_id)
+   227→   227→    if alert is None:
+   228→   228→        raise HTTPException(status_code=404, detail="alert not found")
+   229→   229→    return alert
+   230→   230→
+   231→   231→
+   232→   232→class VerifyAlert(BaseModel):
+   233→   233→    action: str = "verified"
+   234→   234→    note: str = ""
+   235→   235→
+   236→   236→
+   237→   237→@router.post("/alerts/{alert_id}/verify")
+   238→   238→def verify_alert(alert_id: str, payload: VerifyAlert):
+   239→   239→    if payload.action not in {"verified", "false_alarm", "escalated"}:
+   240→   240→        raise HTTPException(status_code=400, detail="action must be verified, false_alarm, or escalated")
+   241→   241→    alert = fleet_store.verify_alert(alert_id, action=payload.action, note=payload.note.strip())
+   242→   242→    if alert is None:
+   243→   243→        raise HTTPException(status_code=404, detail="alert not found")
+   244→   244→    return alert
+   245→   245→
+   246→   246→
+   247→   247→@router.get("/incidents")
+   248→   248→def get_incidents(limit: int = 50, country: Optional[str] = None):
+   249→   249→    incidents = sqlite_store.list_incidents(limit=limit, country=country)
+   250→   250→    return {"incidents": incidents}
+   251→   251→
+   252→   252→
+   253→   253→@router.get("/database/status")
+   254→   254→def get_database_status(country: Optional[str] = None):
+   255→   255→    return sqlite_store.database_status(country=country)
+   256→   256→
+   257→   257→
+   258→   258→@router.post("/database/reset")
+   259→   259→def reset_database(country: Optional[str] = None):
+   260→   260→    try:
+   261→   261→        sqlite_store.reset_database(country=country)
+   262→   262→        # Reset the fleet store to align with empty database, otherwise state persists in memory
+   263→   263→        fleet_store.__init__()
+   264→   264→        return {"status": "ok", "message": "Demo data reset successfully."}
+   265→   265→    except Exception as exc:
+   266→   266→        raise HTTPException(status_code=500, detail=str(exc))
+   267→   267→
+   268→   268→
+   269→   269→@router.post("/alerts/reset")
+   270→   270→def reset_alerts(country: Optional[str] = None):
+   271→   271→    try:
+   272→   272→        sqlite_store.delete_all_alerts(country=country)
+   273→   273→        fleet_store._alerts.clear()
+   274→   274→        return {"status": "ok", "message": "Alerts reset successfully."}
+   275→   275→    except Exception as exc:
+   276→   276→        raise HTTPException(status_code=500, detail=str(exc))
+   277→   277→
+   278→   278→
+   279→   279→@router.post("/demand/reset")
+   280→   280→def reset_demand(country: Optional[str] = None):
+   281→   281→    try:
+   282→   282→        from backend.app.db.sqlite_store import COUNTRY_CODES, normalize_country
+   283→   283→        from backend.app.core.phase2 import _demand_forecast_path
+   284→   284→        countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   285→   285→        for code in countries:
+   286→   286→            path = _demand_forecast_path(code)
+   287→   287→            if path.exists():
+   288→   288→                path.unlink()
+   289→   289→        return {"status": "ok", "message": "Demand forecast reset successfully."}
+   290→   290→    except Exception as exc:
+   291→   291→        raise HTTPException(status_code=500, detail=str(exc))
+   292→   292→
+   293→   293→
+   294→   294→@router.get("/routes")
+   295→   295→def get_routes(route: Optional[str] = None, q: Optional[str] = None, country: Optional[str] = None, active_only: bool = False):
+   296→   296→    if country:
+   297→   297→        country = sqlite_store.normalize_country(country)
+   298→   298→    routes = list_routes()
+   299→   299→    if country:
+   300→   300→        routes = [item for item in routes if item.get("country") == country]
+   301→   301→    routes = [_sanitize_route_region(item) for item in routes]
+   302→   302→    if active_only:
+   303→   303→        active_routes = {
+   304→   304→            vehicle.get("route")
+   305→   305→            for vehicle in sqlite_store.list_vehicles()
+   306→   306→            if not country or vehicle.get("country") == country
+   307→   307→        }
+   308→   308→        routes = [item for item in routes if item.get("route") in active_routes]
+   309→   309→    query = (route or q or "").strip().lower()
+   310→   310→    if query:
+   311→   311→        routes = [
+   312→   312→            item for item in routes
+   313→   313→            if query in item["route"].lower() or query in item["name"].lower()
+   314→   314→        ]
+   315→   315→    return {"routes": routes}
+   316→   316→
+   317→   317→
+   318→   318→@router.get("/countries")
+   319→   319→def get_countries():
+   320→   320→    # Return countries that have a database instead of only countries with active routes
+   321→   321→    from backend.app.db.sqlite_store import COUNTRY_CODES
+   322→   322→    codes = sorted(COUNTRY_CODES)
+   323→   323→    return {
+   324→   324→        "countries": [
+   325→   325→            {"code": code, "name": COUNTRY_NAMES.get(code, code)}
+   326→   326→            for code in codes
+   327→   327→        ]
+   328→   328→    }
+   329→   329→
+   330→   330→
+   331→   331→@router.get("/regions")
+   332→   332→def get_regions(country: Optional[str] = None):
+   333→   333→    """Return regions that have routes for a given country.
+   334→   334→    Used to populate region dropdown filters dynamically."""
+   335→   335→    if not country:
+   336→   336→        return {"regions": [], "cities": []}
+   337→   337→    country_routes = [item for item in list_routes() if item.get("country") == country]
+   338→   338→    regions = {
+   339→   339→        str(item.get("region") or item.get("zone") or item.get("city") or "").strip()
+   340→   340→        for item in country_routes
+   341→   341→    }
+   342→   342→    regions.update(sqlite_store.get_regions_for_country(country))
+   343→   343→    regions = sorted(region for region in regions if region and region.upper() not in COUNTRY_NAME_VALUES)
+   344→   344→    return {"regions": regions}
+   345→   345→
+   346→   346→
+   347→   347→@router.get("/locations")
+   348→   348→def get_locations(country: Optional[str] = None):
+   349→   349→    routes = list_routes()
+   350→   350→    if country:
+   351→   351→        routes = [item for item in routes if item.get("country") == country]
+   352→   352→    names = sorted({
+   353→   353→        str(item.get("city") or item.get("zone") or "").strip()
+   354→   354→        for item in routes
+   355→   355→        if str(item.get("city") or item.get("zone") or "").strip()
+   356→   356→    })
+   357→   357→    return {"locations": [{"value": name, "label": name} for name in names]}
+   358→   358→
+   359→   359→
+   360→   360→@router.get("/places")
+   361→   361→def get_places(q: Optional[str] = None, limit: int = 12, remote: bool = True, country: Optional[str] = None):
+   362→   362→    routes = list_routes()
+   363→   363→    if country:
+   364→   364→        routes = [item for item in routes if item.get("country") == country]
+   365→   365→    return {"places": search_places(routes, q or "", limit=limit, include_remote=remote, country=country)}
+   366→   366→
+   367→   367→
+   368→   368→@router.post("/suggestions")
+   369→   369→def get_suggestions(query: SuggestionQuery):
+   370→   370→    route_context = (query.route or "").strip()
+   371→   371→    if query.country:
+   372→   372→        country_routes = {item.get("route") for item in list_routes() if item.get("country") == query.country}
+   373→   373→        if route_context not in country_routes:
+   374→   374→            route_context = ""
+   375→   375→    return fleet_store.route_suggestions(
+   376→   376→        query=query.query,
+   377→   377→        route=route_context,
+   378→   378→        country=query.country,
+   379→   379→        origin_text=query.origin or "",
+   380→   380→        origin_latitude=query.origin_latitude,
+   381→   381→        origin_longitude=query.origin_longitude,
+   382→   382→        destination=query.destination or "",
+   383→   383→        destination_latitude=query.destination_latitude,
+   384→   384→        destination_longitude=query.destination_longitude,
+   385→   385→        limit=query.limit,
+   386→   386→    )
+   387→   387→
+   388→   388→
+   389→   389→class RoutePayload(BaseModel):
+   390→   390→    route: str
+   391→   391→    name: str
+   392→   392→    polyline: list[list[float]]
+   393→   393→    country: Optional[str] = None
+   394→   394→    region: Optional[str] = None
+   395→   395→    tag: Optional[str] = None
+   396→   396→    route_type: Optional[str] = None
+   397→   397→    origin_name: Optional[str] = None
+   398→   398→    destination_name: Optional[str] = None
+   399→   399→    distance_km: Optional[float] = None
+   400→   400→    description: Optional[str] = None
+   401→   401→    minimum_fare: Optional[float] = None
+   402→   402→    fare_per_km: Optional[float] = None
+   403→   403→    points: list[RoutePoint] = []
+   404→   404→
+   405→   405→    @validator("route", "name")
+   406→   406→    def required_text(cls, value: str):
+   407→   407→        value = value.strip()
+   408→   408→        if not value:
+   409→   409→            raise ValueError("route and name are required")
+   410→   410→        return value
+   411→   411→
+   412→   412→    @validator("polyline")
+   413→   413→    def valid_polyline(cls, value: list[list[float]]):
+   414→   414→        validate_polyline(value)
+   415→   415→        return value
+   416→   416→
+   417→   417→
+   418→   418→@router.post("/routes")
+   419→   419→def post_route(payload: RoutePayload, replace: bool = Query(False)):
+   420→   420→    try:
+   421→   421→        country = (payload.country or "PH").strip().upper()
+   422→   422→        visible_tag = (payload.tag or payload.route).strip()
+   423→   423→        storage_route = payload.route.strip()
+   424→   424→        if country and not storage_route.upper().startswith(f"{country}-"):
+   425→   425→            # Route tags are country-local. Prefix the stored ID only when needed
+   426→   426→            # so large country datasets never reject another country's matching tag.
+   427→   427→            cross_country_conflict = any(
+   428→   428→                item.get("route") == storage_route and item.get("country") and item.get("country") != country
+   429→   429→                for item in list_routes()
+   430→   430→            )
+   431→   431→            if cross_country_conflict:
+   432→   432→                storage_route = f"{country}-{storage_route}"
+   433→   433→        if sqlite_store.route_exists(visible_tag, country=country) and not replace:
+   434→   434→            raise HTTPException(status_code=409, detail=f"route tag '{visible_tag}' already exists in {country}")
+   435→   435→        if sqlite_store.route_name_exists(payload.name, exclude_route=storage_route if replace else None, country=country):
+   436→   436→            raise HTTPException(status_code=409, detail=f"route name '{payload.name}' already exists")
+   437→   437→        point_dicts = [model_to_dict(point) for point in payload.points]
+   438→   438→        sqlite_store.save_route(
+   439→   439→            storage_route,
+   440→   440→            payload.name,
+   441→   441→            [(lat, lon) for lat, lon in payload.polyline],
+   442→   442→            country=country,
+   443→   443→            region=payload.region,
+   444→   444→            tag=visible_tag,
+   445→   445→            route_type=payload.route_type,
+   446→   446→            origin_name=payload.origin_name,
+   447→   447→            destination_name=payload.destination_name,
+   448→   448→            distance_km=payload.distance_km,
+   449→   449→            description=payload.description,
+   450→   450→            minimum_fare=payload.minimum_fare,
+   451→   451→            fare_per_km=payload.fare_per_km,
+   452→   452→            points=point_dicts,
+   453→   453→        )
+   454→   454→        return {"status": "ok", "route": storage_route, "tag": visible_tag}
+   455→   455→    except HTTPException:
+   456→   456→        raise
+   457→   457→    except Exception as exc:
+   458→   458→        raise HTTPException(status_code=500, detail=str(exc))
+   459→   459→
+   460→   460→
+   461→   461→@router.post("/routes/import")
+   462→   462→async def import_routes(
+   463→   463→    file: UploadFile = File(...),
+   464→   464→    commit: bool = Form(False),
+   465→   465→    replace: bool = Form(False),
+   466→   466→    simplify_tolerance: float = Form(0.0),
+   467→   467→):
+   468→   468→    content = await file.read()
+   469→   469→    try:
+   470→   470→        routes = parse_route_file(file.filename or "", content)
+   471→   471→        if simplify_tolerance > 0:
+   472→   472→            routes = [
+   473→   473→                route | {"polyline": simplify_polyline(route["polyline"], simplify_tolerance)}
+   474→   474→                for route in routes
+   475→   475→            ]
+   476→   476→        errors = validate_imported_routes(routes, replace=replace)
+   477→   477→        if errors:
+   478→   478→            return {"status": "invalid", "filename": file.filename, "commit": False, "routes": routes, "errors": errors}
+   479→   479→        if commit:
+   480→   480→            for route in routes:
+   481→   481→                sqlite_store.save_route(
+   482→   482→                    route["route"],
+   483→   483→                    route["name"],
+   484→   484→                    [(lat, lon) for lat, lon in route["polyline"]],
+   485→   485→                    country=route.get("country"),
+   486→   486→                    region=route.get("region"),
+   487→   487→                    tag=route.get("tag"),
+   488→   488→                    route_type=route.get("route_type"),
+   489→   489→                    origin_name=route.get("origin_name"),
+   490→   490→                    destination_name=route.get("destination_name"),
+   491→   491→                    points=route.get("points"),
+   492→   492→                )
+   493→   493→        return {
+   494→   494→            "status": "committed" if commit else "preview",
+   495→   495→            "filename": file.filename,
+   496→   496→            "commit": commit,
+   497→   497→            "count": len(routes),
+   498→   498→            "routes": routes,
+   499→   499→            "errors": [],
+   500→   500→        }
+   501→   501→    except ValueError as exc:
+   502→   502→        raise HTTPException(status_code=400, detail=str(exc))
+   503→   503→
+   504→   504→
+   505→   505→@router.delete("/routes/{route}")
+   506→   506→def delete_route(route: str):
+   507→   507→    try:
+   508→   508→        sqlite_store.delete_route(route)
+   509→   509→        return {"status": "deleted", "route": route}
+   510→   510→    except Exception as exc:
+   511→   511→        raise HTTPException(status_code=500, detail=str(exc))
+   512→   512→
+   513→   513→
+   514→   514→class CreateAlert(BaseModel):
+   515→   515→    vehicle_id: str
+   516→   516→    route: str
+   517→   517→    severity: str = "medium"
+   518→   518→    message: str
+   519→   519→
+   520→   520→
+   521→   521→@router.post("/alerts")
+   522→   522→def create_alert(payload: CreateAlert):
+   523→   523→    try:
+   524→   524→        ts = datetime.now(timezone.utc).isoformat()
+   525→   525→        alert = OperatorAlertModel(id=str(uuid4()), severity=payload.severity, vehicle_id=payload.vehicle_id, route=payload.route, message=payload.message, timestamp=ts, acknowledged=False)
+   526→   526→        sqlite_store.save_alert(alert)
+   527→   527→        try:
+   528→   528→            fleet_store._alerts.append(alert)
+   529→   529→        except Exception:
+   530→   530→            pass
+   531→   531→        return {"status": "ok", "alert": model_to_dict(alert)}
+   532→   532→    except Exception as exc:
+   533→   533→        raise HTTPException(status_code=500, detail=str(exc))
+   534→   534→
+   535→   535→
+   536→   536→class OperatorFeedback(BaseModel):
+   537→   537→    alert_id: str
+   538→   538→    vehicle_id: str
+   539→   539→    route: str
+   540→   540→    action: str
+   541→   541→
+   542→   542→
+   543→   543→@router.post("/operator-feedback")
+   544→   544→def create_operator_feedback(payload: OperatorFeedback):
+   545→   545→    try:
+   546→   546→        sqlite_store.save_operator_feedback(
+   547→   547→            alert_id=payload.alert_id,
+   548→   548→            vehicle_id=payload.vehicle_id,
+   549→   549→            route=payload.route,
+   550→   550→            action=payload.action,
+   551→   551→            timestamp=datetime.now(timezone.utc).isoformat(),
+   552→   552→        )
+   553→   553→        return {"status": "ok"}
+   554→   554→    except Exception as exc:
+   555→   555→        raise HTTPException(status_code=500, detail=str(exc))
+   556→   556→
+   557→   557→
+   558→   558→@router.get("/config")
+   559→   559→def get_project_config():
+   560→   560→    config = get_config().copy()
+   561→   561→    return {
+   562→   562→        "project": config.get("project", {}),
+   563→   563→        "server": config.get("server", {}),
+   564→   564→        "occupancy": config.get("occupancy", {}),
+   565→   565→        "route_monitoring": config.get("route_monitoring", {}),
+   566→   566→        "routes": config.get("routes", {}),
+   567→   567→        "mock_telemetry": config.get("mock_telemetry", {}),
+   568→   568→        "edge_counter": config.get("edge_counter", {}),
+   569→   569→    }
+   570→   570→
+   571→   571→
+   572→   572→@router.post("/chatbot")
+   573→   573→def chatbot(query: ChatQuery):
+   574→   574→    route_context = (query.route or "").strip()
+   575→   575→    if query.country:
+   576→   576→        country_routes = {item.get("route") for item in list_routes() if item.get("country") == query.country}
+   577→   577→        if route_context not in country_routes:
+   578→   578→            route_context = ""
+   579→   579→    return fleet_store.recommendation(
+   580→   580→        route=route_context,
+   581→   581→        query=query.query,
+   582→   582→        country=query.country,
+   583→   583→        origin_text=query.origin or "",
+   584→   584→        origin_latitude=query.origin_latitude,
+   585→   585→        origin_longitude=query.origin_longitude,
+   586→   586→        destination=query.destination or "",
+   587→   587→        destination_latitude=query.destination_latitude,
+   588→   588→        destination_longitude=query.destination_longitude,
+   589→   589→        history=query.history,
+   590→   590→    )
+   591→   591→
+   592→   592→
+   593→   593→def validate_polyline(polyline: list[list[float]]) -> None:
+   594→   594→    if len(polyline) < 2:
+   595→   595→        raise ValueError("polyline must contain at least two points")
+   596→   596→    for index, point in enumerate(polyline):
+   597→   597→        if len(point) != 2:
+   598→   598→            raise ValueError(f"point {index} must be [latitude, longitude]")
+   599→   599→        lat, lon = point
+   600→   600→        if not all(isinstance(value, (int, float)) and math.isfinite(value) for value in [lat, lon]):
+   601→   601→            raise ValueError(f"point {index} contains non-numeric coordinates")
+   602→   602→        if not -90 <= float(lat) <= 90 or not -180 <= float(lon) <= 180:
+   603→   603→            raise ValueError(f"point {index} is outside latitude/longitude bounds")
+   604→   604→
+   605→   605→
+   606→   606→def validate_imported_routes(routes: list[dict[str, Any]], replace: bool = False) -> list[str]:
+   607→   607→    errors: list[str] = []
+   608→   608→    seen_routes: set[str] = set()
+   609→   609→    seen_names: set[str] = set()
+   610→   610→    for index, route in enumerate(routes):
+   611→   611→        route_id = str(route.get("route", "")).strip()
+   612→   612→        name = str(route.get("name", "")).strip()
+   613→   613→        if not route_id or not name:
+   614→   614→            errors.append(f"route {index + 1}: route and name are required")
+   615→   615→            continue
+   616→   616→        if route_id.lower() in seen_routes:
+   617→   617→            errors.append(f"route {route_id}: duplicate route id inside import")
+   618→   618→        if name.lower() in seen_names:
+   619→   619→            errors.append(f"route {route_id}: duplicate route name inside import")
+   620→   620→        seen_routes.add(route_id.lower())
+   621→   621→        seen_names.add(name.lower())
+   622→   622→        try:
+   623→   623→            validate_polyline(route.get("polyline", []))
+   624→   624→        except ValueError as exc:
+   625→   625→            errors.append(f"route {route_id}: {exc}")
+   626→   626→        if sqlite_store.route_exists(route_id) and not replace:
+   627→   627→            errors.append(f"route {route_id}: route id already exists")
+   628→   628→        if sqlite_store.route_name_exists(name, exclude_route=route_id if replace else None):
+   629→   629→            errors.append(f"route {route_id}: route name already exists")
+   630→   630→    if not routes:
+   631→   631→        errors.append("no routes found in uploaded file")
+   632→   632→    return errors
+   633→   633→
+   634→   634→
+   635→   635→def parse_route_file(filename: str, content: bytes) -> list[dict[str, Any]]:
+   636→   636→    suffix = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+   637→   637→    if suffix in {"geojson", "json"}:
+   638→   638→        return parse_geojson_routes(content)
+   639→   639→    if suffix == "csv":
+   640→   640→        return parse_csv_routes(content.decode("utf-8-sig"))
+   641→   641→    if suffix == "zip":
+   642→   642→        return parse_gtfs_routes(content)
+   643→   643→    raise ValueError("supported route files: .geojson, .json, .csv, .zip GTFS")
+   644→   644→
+   645→   645→
+   646→   646→def parse_geojson_routes(content: bytes) -> list[dict[str, Any]]:
+   647→   647→    payload = json.loads(content.decode("utf-8-sig"))
+   648→   648→    features = payload.get("features", []) if payload.get("type") == "FeatureCollection" else [payload]
+   649→   649→    routes: list[dict[str, Any]] = []
+   650→   650→    for index, feature in enumerate(features):
+   651→   651→        geometry = feature.get("geometry", feature)
+   652→   652→        props = feature.get("properties", {})
+   653→   653→        route_id = str(props.get("route") or props.get("route_id") or props.get("id") or f"import-{index + 1}").strip()
+   654→   654→        name = str(props.get("name") or props.get("route_name") or route_id).strip()
+   655→   655→        coordinates = geometry.get("coordinates", [])
+   656→   656→        if geometry.get("type") == "LineString":
+   657→   657→            polyline = [[float(lat), float(lon)] for lon, lat, *_ in coordinates]
+   658→   658→        elif geometry.get("type") == "MultiLineString":
+   659→   659→            polyline = [[float(lat), float(lon)] for line in coordinates for lon, lat, *_ in line]
+   660→   660→        else:
+   661→   661→            continue
+   662→   662→        routes.append({"route": route_id, "name": name, "polyline": polyline})
+   663→   663→    return routes
+   664→   664→
+   665→   665→
+   666→   666→def parse_csv_routes(text: str) -> list[dict[str, Any]]:
+   667→   667→    reader = csv.DictReader(io.StringIO(text))
+   668→   668→    if not reader.fieldnames:
+   669→   669→        return []
+   670→   670→    grouped: dict[str, dict[str, Any]] = {}
+   671→   671→    for row in reader:
+   672→   672→        route_id = (row.get("route") or row.get("route_id") or row.get("id") or "").strip()
+   673→   673→        name = (row.get("name") or row.get("route_name") or route_id).strip()
+   674→   674→        lat_value = row.get("latitude") or row.get("lat") or row.get("shape_pt_lat")
+   675→   675→        lon_value = row.get("longitude") or row.get("lon") or row.get("lng") or row.get("shape_pt_lon")
+   676→   676→        if not route_id or lat_value is None or lon_value is None:
+   677→   677→            continue
+   678→   678→        item = grouped.setdefault(route_id, {"route": route_id, "name": name, "polyline": []})
+   679→   679→        item["polyline"].append([float(lat_value), float(lon_value)])
+   680→   680→    return list(grouped.values())
+   681→   681→
+   682→   682→
+   683→   683→def parse_gtfs_routes(content: bytes) -> list[dict[str, Any]]:
+   684→   684→    with zipfile.ZipFile(io.BytesIO(content)) as archive:
+   685→   685→        names = set(archive.namelist())
+   686→   686→        if "shapes.txt" not in names:
+   687→   687→            raise ValueError("GTFS zip must include shapes.txt")
+   688→   688→        route_names: dict[str, str] = {}
+   689→   689→        if "routes.txt" in names:
+   690→   690→            with archive.open("routes.txt") as handle:
+   691→   691→                for row in csv.DictReader(io.TextIOWrapper(handle, encoding="utf-8-sig")):
+   692→   692→                    route_id = row.get("route_id", "")
+   693→   693→                    route_names[route_id] = row.get("route_short_name") or row.get("route_long_name") or route_id
+   694→   694→        shape_to_route: dict[str, str] = {}
+   695→   695→        if "trips.txt" in names:
+   696→   696→            with archive.open("trips.txt") as handle:
+   697→   697→                for row in csv.DictReader(io.TextIOWrapper(handle, encoding="utf-8-sig")):
+   698→   698→                    if row.get("shape_id") and row.get("route_id"):
+   699→   699→                        shape_to_route.setdefault(row["shape_id"], row["route_id"])
+   700→   700→        shapes: dict[str, list[tuple[int, float, float]]] = {}
+   701→   701→        with archive.open("shapes.txt") as handle:
+   702→   702→            for row in csv.DictReader(io.TextIOWrapper(handle, encoding="utf-8-sig")):
+   703→   703→                shape_id = row["shape_id"]
+   704→   704→                sequence = int(float(row.get("shape_pt_sequence") or len(shapes.get(shape_id, []))))
+   705→   705→                shapes.setdefault(shape_id, []).append((sequence, float(row["shape_pt_lat"]), float(row["shape_pt_lon"])))
+   706→   706→    routes = []
+   707→   707→    for shape_id, points in shapes.items():
+   708→   708→        route_id = shape_to_route.get(shape_id, shape_id)
+   709→   709→        points = sorted(points, key=lambda item: item[0])
+   710→   710→        routes.append({
+   711→   711→            "route": route_id,
+   712→   712→            "name": route_names.get(route_id, route_id),
+   713→   713→            "polyline": [[lat, lon] for _, lat, lon in points],
+   714→   714→        })
+   715→   715→    return routes
+   716→   716→
+   717→   717→
+   718→   718→def simplify_polyline(points: list[list[float]], tolerance: float) -> list[list[float]]:
+   719→   719→    if len(points) <= 2:
+   720→   720→        return points
+   721→   721→
+   722→   722→    def perpendicular_distance(point: list[float], start: list[float], end: list[float]) -> float:
+   723→   723→        if start == end:
+   724→   724→            return math.hypot(point[0] - start[0], point[1] - start[1])
+   725→   725→        numerator = abs((end[1] - start[1]) * point[0] - (end[0] - start[0]) * point[1] + end[0] * start[1] - end[1] * start[0])
+   726→   726→        denominator = math.hypot(end[1] - start[1], end[0] - start[0])
+   727→   727→        return numerator / denominator
+   728→   728→
+   729→   729→    max_distance = 0.0
+   730→   730→    max_index = 0
+   731→   731→    for index in range(1, len(points) - 1):
+   732→   732→        distance = perpendicular_distance(points[index], points[0], points[-1])
+   733→   733→        if distance > max_distance:
+   734→   734→            max_index = index
+   735→   735→            max_distance = distance
+   736→   736→    if max_distance > tolerance:
+   737→   737→        left = simplify_polyline(points[: max_index + 1], tolerance)
+   738→   738→        right = simplify_polyline(points[max_index:], tolerance)
+   739→   739→        return left[:-1] + right
+   740→   740→    return [points[0], points[-1]]
+   741→   741→

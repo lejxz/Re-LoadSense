@@ -1,0 +1,1209 @@
+     1→     1→from __future__ import annotations
+     2→     2→
+     3→     3→import json
+     4→     4→import sqlite3
+     5→     5→from copy import deepcopy
+     6→     6→from datetime import UTC, datetime, timedelta
+     7→     7→from typing import Any, Optional
+     8→     8→
+     9→     9→from backend.app.core.compat import model_to_dict
+    10→    10→from backend.app.core.config import config_value, repo_path
+    11→    11→from backend.app.core.transit import infer_city, route_metadata
+    12→    12→from backend.app.db.models import OperatorAlert, VehicleState
+    13→    13→
+    14→    14→
+    15→    15→COUNTRY_DB_DIR = repo_path(config_value("data", "country_database_dir", default="data/countries"))
+    16→    16→COUNTRY_CODES = ("PH", "TH", "VN", "MY", "ID")
+    17→    17→DB_PATH = COUNTRY_DB_DIR / "PH" / "loadsense.sqlite"
+    18→    18→
+    19→    19→_ROUTE_CACHE: list[dict[str, Any]] | None = None
+    20→    20→_ROUTE_POLYLINE_CACHE: dict[str, list[tuple[float, float]]] = {}
+    21→    21→_LAST_TELEMETRY_LOG_WRITE: dict[str, datetime] = {}
+    22→    22→TELEMETRY_LOG_INTERVAL_SECONDS = 15
+    23→    23→
+    24→    24→# --- Connection pooling: one SQLite database per country ---
+    25→    25→_connections: dict[str, sqlite3.Connection] = {}
+    26→    26→_db_initialized: set[str] = set()
+    27→    27→
+    28→    28→
+    29→    29→_COUNTRY_NAME_TO_CODE = {
+    30→    30→    "PHILIPPINES": "PH",
+    31→    31→    "THAILAND": "TH",
+    32→    32→    "VIETNAM": "VN",
+    33→    33→    "MALAYSIA": "MY",
+    34→    34→    "INDONESIA": "ID",
+    35→    35→}
+    36→    36→
+    37→    37→def normalize_country(country: str | None = None) -> str:
+    38→    38→    if not country:
+    39→    39→        return "PH"
+    40→    40→    code = country.strip().upper()
+    41→    41→    if code in COUNTRY_CODES:
+    42→    42→        return code
+    43→    43→    if code in _COUNTRY_NAME_TO_CODE:
+    44→    44→        return _COUNTRY_NAME_TO_CODE[code]
+    45→    45→    return "PH"
+    46→    46→
+    47→    47→
+    48→    48→def database_path(country: str | None = None):
+    49→    49→    code = normalize_country(country)
+    50→    50→    return COUNTRY_DB_DIR / code / "loadsense.sqlite"
+    51→    51→
+    52→    52→
+    53→    53→def route_geojson_path(country: str | None = None):
+    54→    54→    code = normalize_country(country)
+    55→    55→    return COUNTRY_DB_DIR / code / "routes" / f"{code}_osm_routes.geojson"
+    56→    56→
+    57→    57→
+    58→    58→def _get_connection(country: str | None = None) -> sqlite3.Connection:
+    59→    59→    """Return the country-specific connection, creating it if needed."""
+    60→    60→    code = normalize_country(country)
+    61→    61→    if code not in _connections:
+    62→    62→        path = database_path(code)
+    63→    63→        path.parent.mkdir(parents=True, exist_ok=True)
+    64→    64→        conn = sqlite3.connect(path, check_same_thread=False)
+    65→    65→        conn.row_factory = sqlite3.Row
+    66→    66→        conn.execute("PRAGMA journal_mode=WAL;")
+    67→    67→        conn.execute("PRAGMA foreign_keys=ON;")
+    68→    68→        conn.execute("PRAGMA synchronous=NORMAL;")
+    69→    69→        conn.execute("PRAGMA cache_size=-8000;")  # 8MB cache
+    70→    70→        _connections[code] = conn
+    71→    71→    return _connections[code]
+    72→    72→
+    73→    73→
+    74→    74→def _connect() -> sqlite3.Connection:
+    75→    75→    """Legacy alias — returns shared connection instead of creating new ones."""
+    76→    76→    return _get_connection("PH")
+    77→    77→
+    78→    78→
+    79→    79→def init_db(country: str | None = None) -> None:
+    80→    80→    """Initialize the database schema. Only runs once per country/process."""
+    81→    81→    code = normalize_country(country)
+    82→    82→    if code in _db_initialized:
+    83→    83→        return
+    84→    84→    conn = _get_connection(code)
+    85→    85→    conn.executescript(
+    86→    86→        """
+    87→    87→        CREATE TABLE IF NOT EXISTS telemetry_logs (
+    88→    88→            id INTEGER PRIMARY KEY AUTOINCREMENT,
+    89→    89→            vehicle_id TEXT NOT NULL,
+    90→    90→            route TEXT NOT NULL,
+    91→    91→            latitude REAL NOT NULL,
+    92→    92→            longitude REAL NOT NULL,
+    93→    93→            occupancy INTEGER NOT NULL,
+    94→    94→            capacity INTEGER NOT NULL,
+    95→    95→            tier TEXT NOT NULL,
+    96→    96→            source_timestamp TEXT NOT NULL,
+    97→    97→            received_at TEXT NOT NULL,
+    98→    98→            eta_minutes REAL NOT NULL,
+    99→    99→            eta_source TEXT NOT NULL,
+   100→   100→            next_stop_id INTEGER NOT NULL,
+   101→   101→            route_deviation_json TEXT NOT NULL,
+   102→   102→            signal_quality TEXT NOT NULL,
+   103→   103→            speed_kph REAL,
+   104→   104→            heading REAL,
+   105→   105→            direction TEXT,
+   106→   106→            status TEXT NOT NULL DEFAULT 'active'
+   107→   107→        );
+   108→   108→
+   109→   109→        CREATE TABLE IF NOT EXISTS vehicle_states (
+   110→   110→            vehicle_id TEXT PRIMARY KEY,
+   111→   111→            route TEXT NOT NULL,
+   112→   112→            latitude REAL NOT NULL,
+   113→   113→            longitude REAL NOT NULL,
+   114→   114→            occupancy INTEGER NOT NULL,
+   115→   115→            capacity INTEGER NOT NULL,
+   116→   116→            tier TEXT NOT NULL,
+   117→   117→            source_timestamp TEXT NOT NULL,
+   118→   118→            received_at TEXT NOT NULL,
+   119→   119→            eta_minutes REAL NOT NULL,
+   120→   120→            eta_source TEXT NOT NULL,
+   121→   121→            next_stop_id INTEGER NOT NULL,
+   122→   122→            route_deviation_json TEXT NOT NULL,
+   123→   123→            signal_quality TEXT NOT NULL,
+   124→   124→            speed_kph REAL,
+   125→   125→            heading REAL,
+   126→   126→            direction TEXT,
+   127→   127→            status TEXT NOT NULL DEFAULT 'active'
+   128→   128→        );
+   129→   129→
+   130→   130→        CREATE TABLE IF NOT EXISTS operator_alerts (
+   131→   131→            id TEXT PRIMARY KEY,
+   132→   132→            severity TEXT NOT NULL,
+   133→   133→            vehicle_id TEXT NOT NULL,
+   134→   134→            route TEXT NOT NULL,
+   135→   135→            message TEXT NOT NULL,
+   136→   136→            timestamp TEXT NOT NULL,
+   137→   137→            acknowledged INTEGER NOT NULL DEFAULT 0,
+   138→   138→            verification_status TEXT NOT NULL DEFAULT 'open',
+   139→   139→            resolution_note TEXT,
+   140→   140→            verified_at TEXT
+   141→   141→        );
+   142→   142→
+   143→   143→        CREATE TABLE IF NOT EXISTS operator_feedback (
+   144→   144→            id INTEGER PRIMARY KEY AUTOINCREMENT,
+   145→   145→            alert_id TEXT NOT NULL,
+   146→   146→            vehicle_id TEXT NOT NULL,
+   147→   147→            route TEXT NOT NULL,
+   148→   148→            action TEXT NOT NULL,
+   149→   149→            timestamp TEXT NOT NULL
+   150→   150→        );
+   151→   151→
+   152→   152→        CREATE TABLE IF NOT EXISTS chatbot_queries (
+   153→   153→            id INTEGER PRIMARY KEY AUTOINCREMENT,
+   154→   154→            route TEXT NOT NULL,
+   155→   155→            query TEXT NOT NULL,
+   156→   156→            answer TEXT NOT NULL,
+   157→   157→            timestamp TEXT NOT NULL
+   158→   158→        );
+   159→   159→
+   160→   160→        CREATE TABLE IF NOT EXISTS routes (
+   161→   161→            route TEXT PRIMARY KEY,
+   162→   162→            name TEXT NOT NULL,
+   163→   163→            polyline_json TEXT NOT NULL,
+   164→   164→            country TEXT,
+   165→   165→            region TEXT,
+   166→   166→            tag TEXT,
+   167→   167→            route_type TEXT,
+   168→   168→            origin_name TEXT,
+   169→   169→            destination_name TEXT,
+   170→   170→            distance_km REAL,
+   171→   171→            description TEXT,
+   172→   172→            minimum_fare REAL,
+   173→   173→            fare_per_km REAL
+   174→   174→        );
+   175→   175→
+   176→   176→        CREATE TABLE IF NOT EXISTS route_points (
+   177→   177→            id INTEGER PRIMARY KEY AUTOINCREMENT,
+   178→   178→            route TEXT NOT NULL REFERENCES routes(route) ON DELETE CASCADE,
+   179→   179→            sequence_order INTEGER NOT NULL,
+   180→   180→            latitude REAL NOT NULL,
+   181→   181→            longitude REAL NOT NULL,
+   182→   182→            point_type TEXT NOT NULL DEFAULT 'waypoint',
+   183→   183→            label TEXT NOT NULL DEFAULT ''
+   184→   184→        );
+   185→   185→
+   186→   186→        CREATE TABLE IF NOT EXISTS vehicles (
+   187→   187→            vehicle_id TEXT PRIMARY KEY,
+   188→   188→            country TEXT NOT NULL DEFAULT '',
+   189→   189→            route TEXT NOT NULL DEFAULT '',
+   190→   190→            driver TEXT NOT NULL DEFAULT '',
+   191→   191→            max_occupancy INTEGER NOT NULL DEFAULT 20,
+   192→   192→            brand TEXT,
+   193→   193→            model TEXT,
+   194→   194→            plate_number TEXT,
+   195→   195→            vehicle_type TEXT,
+   196→   196→            year INTEGER,
+   197→   197→            registration_number TEXT,
+   198→   198→            status TEXT NOT NULL DEFAULT 'active'
+   199→   199→        );
+   200→   200→
+   201→   201→        /* ── Performance indexes ── */
+   202→   202→        CREATE INDEX IF NOT EXISTS idx_telemetry_logs_route ON telemetry_logs(route);
+   203→   203→        CREATE INDEX IF NOT EXISTS idx_telemetry_logs_vehicle_ts ON telemetry_logs(vehicle_id, received_at);
+   204→   204→        CREATE INDEX IF NOT EXISTS idx_telemetry_logs_received ON telemetry_logs(received_at);
+   205→   205→        CREATE INDEX IF NOT EXISTS idx_vehicle_states_route ON vehicle_states(route);
+   206→   206→        CREATE INDEX IF NOT EXISTS idx_routes_country ON routes(country);
+   207→   207→        CREATE INDEX IF NOT EXISTS idx_routes_country_region ON routes(country, region);
+   208→   208→        CREATE INDEX IF NOT EXISTS idx_routes_country_tag ON routes(country, tag);
+   209→   209→        CREATE INDEX IF NOT EXISTS idx_route_points_route ON route_points(route, sequence_order);
+   210→   210→        CREATE INDEX IF NOT EXISTS idx_vehicles_country ON vehicles(country);
+   211→   211→        CREATE INDEX IF NOT EXISTS idx_vehicles_route ON vehicles(route);
+   212→   212→        CREATE INDEX IF NOT EXISTS idx_alerts_vehicle_ts ON operator_alerts(vehicle_id, timestamp);
+   213→   213→        CREATE INDEX IF NOT EXISTS idx_alerts_status ON operator_alerts(verification_status);
+   214→   214→        """
+   215→   215→    )
+   216→   216→    _ensure_vehicle_columns(conn)
+   217→   217→    _ensure_alert_columns(conn)
+   218→   218→    _ensure_route_columns(conn)
+   219→   219→    conn.commit()
+   220→   220→    _seed_routes_if_needed(conn, code)
+   221→   221→    _db_initialized.add(code)
+   222→   222→
+   223→   223→
+   224→   224→def init_all_country_dbs() -> None:
+   225→   225→    for code in COUNTRY_CODES:
+   226→   226→        init_db(code)
+   227→   227→
+   228→   228→
+   229→   229→def _ensure_vehicle_columns(conn: sqlite3.Connection) -> None:
+   230→   230→    for table in ["telemetry_logs", "vehicle_states"]:
+   231→   231→        existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+   232→   232→        if "direction" not in existing:
+   233→   233→            conn.execute(f"ALTER TABLE {table} ADD COLUMN direction TEXT")
+   234→   234→        if "status" not in existing:
+   235→   235→            conn.execute(f"ALTER TABLE {table} ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+   236→   236→    existing = {row["name"] for row in conn.execute("PRAGMA table_info(vehicles)").fetchall()}
+   237→   237→    columns = {
+   238→   238→        "brand": "TEXT",
+   239→   239→        "model": "TEXT",
+   240→   240→        "plate_number": "TEXT",
+   241→   241→        "vehicle_type": "TEXT",
+   242→   242→        "year": "INTEGER",
+   243→   243→        "registration_number": "TEXT",
+   244→   244→    }
+   245→   245→    for column, definition in columns.items():
+   246→   246→        if column not in existing:
+   247→   247→            conn.execute(f"ALTER TABLE vehicles ADD COLUMN {column} {definition}")
+   248→   248→
+   249→   249→def _ensure_alert_columns(conn: sqlite3.Connection) -> None:
+   250→   250→    existing = {row["name"] for row in conn.execute("PRAGMA table_info(operator_alerts)").fetchall()}
+   251→   251→    if "verification_status" not in existing:
+   252→   252→        conn.execute("ALTER TABLE operator_alerts ADD COLUMN verification_status TEXT NOT NULL DEFAULT 'open'")
+   253→   253→    if "resolution_note" not in existing:
+   254→   254→        conn.execute("ALTER TABLE operator_alerts ADD COLUMN resolution_note TEXT")
+   255→   255→    if "verified_at" not in existing:
+   256→   256→        conn.execute("ALTER TABLE operator_alerts ADD COLUMN verified_at TEXT")
+   257→   257→
+   258→   258→
+   259→   259→def _ensure_route_columns(conn: sqlite3.Connection) -> None:
+   260→   260→    existing = {row["name"] for row in conn.execute("PRAGMA table_info(routes)").fetchall()}
+   261→   261→    columns = {
+   262→   262→        "country": "TEXT",
+   263→   263→        "region": "TEXT",
+   264→   264→        "tag": "TEXT",
+   265→   265→        "route_type": "TEXT",
+   266→   266→        "origin_name": "TEXT",
+   267→   267→        "destination_name": "TEXT",
+   268→   268→        "distance_km": "REAL",
+   269→   269→        "description": "TEXT",
+   270→   270→        "minimum_fare": "REAL",
+   271→   271→        "fare_per_km": "REAL",
+   272→   272→    }
+   273→   273→    for column, definition in columns.items():
+   274→   274→        if column not in existing:
+   275→   275→            conn.execute(f"ALTER TABLE routes ADD COLUMN {column} {definition}")
+   276→   276→
+   277→   277→
+   278→   278→def _seed_routes_if_needed(conn: sqlite3.Connection, country_code: str) -> None:
+   279→   279→    """Seed routes from GeoJSON files if the database is empty."""
+   280→   280→    row = conn.execute("SELECT COUNT(*) AS count FROM routes").fetchone()
+   281→   281→    if int(row["count"] if row else 0) > 0:
+   282→   282→        return
+   283→   283→    total = 0
+   284→   284→    geojson_path = route_geojson_path(country_code)
+   285→   285→    if not geojson_path.exists():
+   286→   286→        return
+   287→   287→    routes = _load_geojson_routes(geojson_path, country_code, max_routes=50, max_points=120)
+   288→   288→    for route in routes:
+   289→   289→        conn.execute(
+   290→   290→            """
+   291→   291→            INSERT OR IGNORE INTO routes (
+   292→   292→                route, name, polyline_json, country, region,
+   293→   293→                tag, route_type, origin_name, destination_name, distance_km, description, minimum_fare, fare_per_km
+   294→   294→            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL)
+   295→   295→            """,
+   296→   296→            (
+   297→   297→                route["route"],
+   298→   298→                route["name"],
+   299→   299→                json.dumps(route["polyline"]),
+   300→   300→                country_code,
+   301→   301→                route.get("region") or route.get("city") or "",
+   302→   302→                route.get("tag") or route["route"],
+   303→   303→                route.get("route_type") or "PUV",
+   304→   304→                route.get("origin_name") or "",
+   305→   305→                route.get("destination_name") or "",
+   306→   306→            ),
+   307→   307→        )
+   308→   308→        total += 1
+   309→   309→    if total > 0:
+   310→   310→        conn.commit()
+   311→   311→
+   312→   312→
+   313→   313→def _load_geojson_routes(
+   314→   314→    path, country: str, max_routes: int = 50, max_points: int = 120
+   315→   315→) -> list[dict[str, Any]]:
+   316→   316→    """Load routes from a GeoJSON file. Limits to max_routes for performance."""
+   317→   317→    try:
+   318→   318→        payload = json.loads(path.read_text(encoding="utf-8"))
+   319→   319→    except Exception:
+   320→   320→        return []
+   321→   321→    routes: list[dict[str, Any]] = []
+   322→   322→    for index, feature in enumerate(payload.get("features", [])):
+   323→   323→        if len(routes) >= max_routes:
+   324→   324→            break
+   325→   325→        props = feature.get("properties", {})
+   326→   326→        geometry = feature.get("geometry", {})
+   327→   327→        if geometry.get("type") != "LineString":
+   328→   328→            continue
+   329→   329→        route_id = str(props.get("route_id") or props.get("route") or f"{country}-{index + 1}").strip()
+   330→   330→        name = str(props.get("route_name") or props.get("name") or route_id).strip()
+   331→   331→        # GeoJSON is [lon, lat], convert to (lat, lon)
+   332→   332→        raw_coords = geometry.get("coordinates", [])
+   333→   333→        points = [(float(c[1]), float(c[0])) for c in raw_coords if len(c) >= 2]
+   334→   334→        points = _sample_polyline(points, max_points=max_points)
+   335→   335→        if route_id and name and len(points) >= 2:
+   336→   336→            # Infer city from first coordinate
+   337→   337→            city = infer_city(
+   338→   338→                [{"latitude": points[0][0], "longitude": points[0][1]}],
+   339→   339→                name,
+   340→   340→            )
+   341→   341→            routes.append({
+   342→   342→                "route": route_id,
+   343→   343→                "name": name,
+   344→   344→                "polyline": points,
+   345→   345→                "city": city or "",
+   346→   346→                "province": props.get("province") or "",
+   347→   347→                "region": props.get("region") or "",
+   348→   348→                "tag": props.get("route_ref") or props.get("ref") or route_id,
+   349→   349→                "route_type": props.get("route_type") or "PUV",
+   350→   350→                "origin_name": props.get("origin_name") or "",
+   351→   351→                "destination_name": props.get("destination_name") or "",
+   352→   352→            })
+   353→   353→    return routes
+   354→   354→
+   355→   355→
+   356→   356→def _sample_polyline(points: list[tuple[float, float]], max_points: int) -> list[tuple[float, float]]:
+   357→   357→    if len(points) <= max_points:
+   358→   358→        return points
+   359→   359→    sampled: list[tuple[float, float]] = []
+   360→   360→    last_index = len(points) - 1
+   361→   361→    for i in range(max_points):
+   362→   362→        sampled.append(points[round((i / (max_points - 1)) * last_index)])
+   363→   363→    result: list[tuple[float, float]] = []
+   364→   364→    for point in sampled:
+   365→   365→        if not result or point != result[-1]:
+   366→   366→            result.append(point)
+   367→   367→    return result
+   368→   368→
+   369→   369→
+   370→   370→# ────────────────────────────────────────────────────────────────
+   371→   371→# Region queries (for dropdown population)
+   372→   372→# ────────────────────────────────────────────────────────────────
+   373→   373→
+   374→   374→def get_regions_for_country(country: str) -> list[str]:
+   375→   375→    """Return distinct region entries for routes in a country.
+   376→   376→    Used to populate region dropdowns dynamically."""
+   377→   377→    code = normalize_country(country)
+   378→   378→    init_db(code)
+   379→   379→    conn = _get_connection(code)
+   380→   380→    rows = conn.execute(
+   381→   381→        """
+   382→   382→        SELECT DISTINCT region
+   383→   383→        FROM routes
+   384→   384→        WHERE country = ?
+   385→   385→          AND COALESCE(region, '') != ''
+   386→   386→          AND UPPER(region) <> UPPER(country)
+   387→   387→        ORDER BY region
+   388→   388→        """,
+   389→   389→        (code,),
+   390→   390→    ).fetchall()
+   391→   391→    return [row["region"] for row in rows]
+   392→   392→
+   393→   393→
+   394→   394→def get_countries_with_routes() -> list[str]:
+   395→   395→    """Return country codes that have at least one route in the database."""
+   396→   396→    countries: set[str] = set()
+   397→   397→    for code in COUNTRY_CODES:
+   398→   398→        init_db(code)
+   399→   399→        conn = _get_connection(code)
+   400→   400→        row = conn.execute("SELECT 1 FROM routes LIMIT 1").fetchone()
+   401→   401→        if row is not None:
+   402→   402→            countries.add(code)
+   403→   403→    return sorted(countries)
+   404→   404→
+   405→   405→
+   406→   406→def country_for_route(route: str, default: str = "PH") -> str:
+   407→   407→    route_text = str(route or "")
+   408→   408→    for code in COUNTRY_CODES:
+   409→   409→        init_db(code)
+   410→   410→        conn = _get_connection(code)
+   411→   411→        row = conn.execute("SELECT country FROM routes WHERE route = ? OR tag = ? LIMIT 1", (route_text, route_text)).fetchone()
+   412→   412→        if row and row["country"]:
+   413→   413→            return normalize_country(row["country"])
+   414→   414→    return normalize_country(default)
+   415→   415→
+   416→   416→
+   417→   417→# ────────────────────────────────────────────────────────────────
+   418→   418→# Vehicle state persistence
+   419→   419→# ────────────────────────────────────────────────────────────────
+   420→   420→
+   421→   421→def save_vehicle_state(state: VehicleState, received_at: str) -> None:
+   422→   422→    country = country_for_route(state.route)
+   423→   423→    init_db(country)
+   424→   424→    data = model_to_dict(state)
+   425→   425→    received_dt = datetime.fromisoformat(received_at.replace("Z", "+00:00"))
+   426→   426→    last_log = _LAST_TELEMETRY_LOG_WRITE.get(state.vehicle_id)
+   427→   427→    should_log = last_log is None or (received_dt - last_log).total_seconds() >= TELEMETRY_LOG_INTERVAL_SECONDS
+   428→   428→    params = {
+   429→   429→        "vehicle_id": state.vehicle_id,
+   430→   430→        "route": state.route,
+   431→   431→        "latitude": state.latitude,
+   432→   432→        "longitude": state.longitude,
+   433→   433→        "occupancy": state.occupancy,
+   434→   434→        "capacity": state.capacity,
+   435→   435→        "tier": state.tier,
+   436→   436→        "source_timestamp": state.timestamp,
+   437→   437→        "received_at": received_at,
+   438→   438→        "eta_minutes": state.eta_minutes,
+   439→   439→        "eta_source": state.eta_source,
+   440→   440→        "next_stop_id": state.next_stop_id,
+   441→   441→        "route_deviation_json": json.dumps(data["route_deviation"]),
+   442→   442→        "signal_quality": state.signal_quality,
+   443→   443→        "speed_kph": state.speed_kph,
+   444→   444→        "heading": state.heading,
+   445→   445→        "direction": state.direction,
+   446→   446→        "status": state.status,
+   447→   447→    }
+   448→   448→    conn = _get_connection(country)
+   449→   449→    if should_log:
+   450→   450→        conn.execute(
+   451→   451→            """
+   452→   452→            INSERT INTO telemetry_logs (
+   453→   453→                vehicle_id, route, latitude, longitude, occupancy, capacity, tier,
+   454→   454→                source_timestamp, received_at, eta_minutes, eta_source, next_stop_id,
+   455→   455→                route_deviation_json, signal_quality, speed_kph, heading, direction, status
+   456→   456→            ) VALUES (
+   457→   457→                :vehicle_id, :route, :latitude, :longitude, :occupancy, :capacity, :tier,
+   458→   458→                :source_timestamp, :received_at, :eta_minutes, :eta_source, :next_stop_id,
+   459→   459→                :route_deviation_json, :signal_quality, :speed_kph, :heading, :direction, :status
+   460→   460→            )
+   461→   461→            """,
+   462→   462→            params,
+   463→   463→        )
+   464→   464→        _LAST_TELEMETRY_LOG_WRITE[state.vehicle_id] = received_dt
+   465→   465→    conn.execute(
+   466→   466→        """
+   467→   467→        INSERT INTO vehicle_states (
+   468→   468→            vehicle_id, route, latitude, longitude, occupancy, capacity, tier,
+   469→   469→            source_timestamp, received_at, eta_minutes, eta_source, next_stop_id,
+   470→   470→            route_deviation_json, signal_quality, speed_kph, heading, direction, status
+   471→   471→        ) VALUES (
+   472→   472→            :vehicle_id, :route, :latitude, :longitude, :occupancy, :capacity, :tier,
+   473→   473→            :source_timestamp, :received_at, :eta_minutes, :eta_source, :next_stop_id,
+   474→   474→            :route_deviation_json, :signal_quality, :speed_kph, :heading, :direction, :status
+   475→   475→        )
+   476→   476→        ON CONFLICT(vehicle_id) DO UPDATE SET
+   477→   477→            route=excluded.route,
+   478→   478→            latitude=excluded.latitude,
+   479→   479→            longitude=excluded.longitude,
+   480→   480→            occupancy=excluded.occupancy,
+   481→   481→            capacity=excluded.capacity,
+   482→   482→            tier=excluded.tier,
+   483→   483→            source_timestamp=excluded.source_timestamp,
+   484→   484→            received_at=excluded.received_at,
+   485→   485→            eta_minutes=excluded.eta_minutes,
+   486→   486→            eta_source=excluded.eta_source,
+   487→   487→            next_stop_id=excluded.next_stop_id,
+   488→   488→            route_deviation_json=excluded.route_deviation_json,
+   489→   489→            signal_quality=excluded.signal_quality,
+   490→   490→            speed_kph=excluded.speed_kph,
+   491→   491→            heading=excluded.heading,
+   492→   492→            direction=excluded.direction,
+   493→   493→            status=excluded.status
+   494→   494→        """,
+   495→   495→        params,
+   496→   496→    )
+   497→   497→    conn.commit()
+   498→   498→
+   499→   499→
+   500→   500→# ────────────────────────────────────────────────────────────────
+   501→   501→# Alert persistence
+   502→   502→# ────────────────────────────────────────────────────────────────
+   503→   503→
+   504→   504→def save_alert(alert: OperatorAlert) -> None:
+   505→   505→    country = country_for_route(alert.route)
+   506→   506→    init_db(country)
+   507→   507→    conn = _get_connection(country)
+   508→   508→    conn.execute(
+   509→   509→        """
+   510→   510→        INSERT OR IGNORE INTO operator_alerts (
+   511→   511→            id, severity, vehicle_id, route, message, timestamp, acknowledged,
+   512→   512→            verification_status, resolution_note, verified_at
+   513→   513→        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   514→   514→        """,
+   515→   515→        (
+   516→   516→            alert.id,
+   517→   517→            alert.severity,
+   518→   518→            alert.vehicle_id,
+   519→   519→            alert.route,
+   520→   520→            alert.message,
+   521→   521→            alert.timestamp,
+   522→   522→            int(alert.acknowledged),
+   523→   523→            alert.verification_status,
+   524→   524→            alert.resolution_note,
+   525→   525→            alert.verified_at,
+   526→   526→        ),
+   527→   527→    )
+   528→   528→    conn.commit()
+   529→   529→
+   530→   530→
+   531→   531→def acknowledge_alert(alert_id: str, timestamp: str) -> Optional[OperatorAlert]:
+   532→   532→    return verify_alert(alert_id, "verified", "", timestamp)
+   533→   533→
+   534→   534→
+   535→   535→def verify_alert(alert_id: str, action: str, note: str, timestamp: str) -> Optional[OperatorAlert]:
+   536→   536→    normalized_action = action if action in {"verified", "false_alarm", "escalated"} else "verified"
+   537→   537→    acknowledged = 0 if normalized_action == "escalated" else 1
+   538→   538→    conn = None
+   539→   539→    row = None
+   540→   540→    for code in COUNTRY_CODES:
+   541→   541→        init_db(code)
+   542→   542→        candidate = _get_connection(code)
+   543→   543→        row = candidate.execute("SELECT * FROM operator_alerts WHERE id = ?", (alert_id,)).fetchone()
+   544→   544→        if row is not None:
+   545→   545→            conn = candidate
+   546→   546→            break
+   547→   547→    if row is None:
+   548→   548→        return None
+   549→   549→    conn.execute(
+   550→   550→        """
+   551→   551→        UPDATE operator_alerts
+   552→   552→        SET acknowledged = ?, verification_status = ?, resolution_note = ?, verified_at = ?
+   553→   553→        WHERE id = ?
+   554→   554→        """,
+   555→   555→        (acknowledged, normalized_action, note, timestamp, alert_id),
+   556→   556→    )
+   557→   557→    conn.execute(
+   558→   558→        """
+   559→   559→        INSERT INTO operator_feedback (alert_id, vehicle_id, route, action, timestamp)
+   560→   560→        VALUES (?, ?, ?, ?, ?)
+   561→   561→        """,
+   562→   562→        (alert_id, row["vehicle_id"], row["route"], f"{normalized_action}: {note}".strip(": "), timestamp),
+   563→   563→    )
+   564→   564→    conn.commit()
+   565→   565→    updated = conn.execute("SELECT * FROM operator_alerts WHERE id = ?", (alert_id,)).fetchone()
+   566→   566→    return _alert_from_row(updated, acknowledged=bool(acknowledged))
+   567→   567→
+   568→   568→
+   569→   569→def save_chat_query(route: str, query: str, answer: str, timestamp: str) -> None:
+   570→   570→    try:
+   571→   571→        country = country_for_route(str(route))
+   572→   572→        init_db(country)
+   573→   573→        conn = _get_connection(country)
+   574→   574→        conn.execute(
+   575→   575→            "INSERT INTO chatbot_queries (route, query, answer, timestamp) VALUES (?, ?, ?, ?)",
+   576→   576→            (str(route), str(query), str(answer), str(timestamp)),
+   577→   577→        )
+   578→   578→        conn.commit()
+   579→   579→    except Exception as e:
+   580→   580→        print(f"Warning: Failed to save chat query: {e}")
+   581→   581→
+   582→   582→
+   583→   583→def save_operator_feedback(alert_id: str, vehicle_id: str, route: str, action: str, timestamp: str) -> None:
+   584→   584→    country = country_for_route(route)
+   585→   585→    init_db(country)
+   586→   586→    conn = _get_connection(country)
+   587→   587→    conn.execute(
+   588→   588→        """
+   589→   589→        INSERT INTO operator_feedback (alert_id, vehicle_id, route, action, timestamp)
+   590→   590→        VALUES (?, ?, ?, ?, ?)
+   591→   591→        """,
+   592→   592→        (alert_id, vehicle_id, route, action, timestamp),
+   593→   593→    )
+   594→   594→    conn.commit()
+   595→   595→
+   596→   596→
+   597→   597→# ────────────────────────────────────────────────────────────────
+   598→   598→# Data loading
+   599→   599→# ────────────────────────────────────────────────────────────────
+   600→   600→
+   601→   601→def load_vehicle_states(country: str | None = None) -> list[VehicleState]:
+   602→   602→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   603→   603→    result: list[VehicleState] = []
+   604→   604→    for code in countries:
+   605→   605→        init_db(code)
+   606→   606→        conn = _get_connection(code)
+   607→   607→        rows = conn.execute("SELECT * FROM vehicle_states").fetchall()
+   608→   608→        result.extend(_vehicle_from_row(row) for row in rows)
+   609→   609→    return result
+   610→   610→
+   611→   611→
+   612→   612→def load_alerts(country: str | None = None) -> list[OperatorAlert]:
+   613→   613→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   614→   614→    result: list[OperatorAlert] = []
+   615→   615→    for code in countries:
+   616→   616→        init_db(code)
+   617→   617→        conn = _get_connection(code)
+   618→   618→        rows = conn.execute("SELECT * FROM operator_alerts").fetchall()
+   619→   619→        result.extend(_alert_from_row(row) for row in rows)
+   620→   620→    return result
+   621→   621→
+   622→   622→
+   623→   623→def has_open_alert(vehicle_id: str, message: str) -> bool:
+   624→   624→    for code in COUNTRY_CODES:
+   625→   625→        init_db(code)
+   626→   626→        conn = _get_connection(code)
+   627→   627→        row = conn.execute(
+   628→   628→            """
+   629→   629→            SELECT 1 FROM operator_alerts
+   630→   630→            WHERE vehicle_id = ? AND message = ? AND (verification_status = 'open' OR acknowledged = 0)
+   631→   631→            LIMIT 1
+   632→   632→            """,
+   633→   633→            (vehicle_id, message)
+   634→   634→        ).fetchone()
+   635→   635→        if row is not None:
+   636→   636→            return True
+   637→   637→    return False
+   638→   638→
+   639→   639→
+   640→   640→def has_recent_vehicle_alert(vehicle_id: str, minutes: int = 10) -> bool:
+   641→   641→    cutoff = (datetime.now(UTC) - timedelta(minutes=minutes)).isoformat()
+   642→   642→    for code in COUNTRY_CODES:
+   643→   643→        init_db(code)
+   644→   644→        conn = _get_connection(code)
+   645→   645→        row = conn.execute(
+   646→   646→            """
+   647→   647→            SELECT 1 FROM operator_alerts
+   648→   648→            WHERE vehicle_id = ? AND timestamp >= ?
+   649→   649→            LIMIT 1
+   650→   650→            """,
+   651→   651→            (vehicle_id, cutoff),
+   652→   652→        ).fetchone()
+   653→   653→        if row is not None:
+   654→   654→            return True
+   655→   655→    return False
+   656→   656→
+   657→   657→
+   658→   658→# ────────────────────────────────────────────────────────────────
+   659→   659→# Vehicle CRUD
+   660→   660→# ────────────────────────────────────────────────────────────────
+   661→   661→
+   662→   662→def list_vehicles(country: str | None = None) -> list[dict[str, Any]]:
+   663→   663→    if country:
+   664→   664→        code = normalize_country(country)
+   665→   665→        init_db(code)
+   666→   666→        conn = _get_connection(code)
+   667→   667→        rows = conn.execute(
+   668→   668→            """
+   669→   669→            SELECT vehicle_id, country, route, driver, max_occupancy, brand, model,
+   670→   670→                   plate_number, vehicle_type, year, registration_number, status
+   671→   671→            FROM vehicles
+   672→   672→            WHERE country = ?
+   673→   673→            ORDER BY vehicle_id
+   674→   674→            """,
+   675→   675→            (code,),
+   676→   676→        ).fetchall()
+   677→   677→        return [dict(row) for row in rows]
+   678→   678→    result: list[dict[str, Any]] = []
+   679→   679→    for code in COUNTRY_CODES:
+   680→   680→        init_db(code)
+   681→   681→        conn = _get_connection(code)
+   682→   682→        rows = conn.execute(
+   683→   683→            """
+   684→   684→            SELECT vehicle_id, country, route, driver, max_occupancy, brand, model,
+   685→   685→                   plate_number, vehicle_type, year, registration_number, status
+   686→   686→            FROM vehicles
+   687→   687→            ORDER BY vehicle_id
+   688→   688→            """
+   689→   689→        ).fetchall()
+   690→   690→        result.extend(dict(row) for row in rows)
+   691→   691→    return sorted(result, key=lambda row: (row.get("country") or "", row.get("vehicle_id") or ""))
+   692→   692→
+   693→   693→
+   694→   694→def save_vehicle(
+   695→   695→    vehicle_id: str,
+   696→   696→    country: str,
+   697→   697→    route: str,
+   698→   698→    driver: str,
+   699→   699→    max_occupancy: int,
+   700→   700→    brand: str | None = None,
+   701→   701→    model: str | None = None,
+   702→   702→    plate_number: str | None = None,
+   703→   703→    vehicle_type: str | None = None,
+   704→   704→    year: int | None = None,
+   705→   705→    registration_number: str | None = None,
+   706→   706→    status: str = "active",
+   707→   707→) -> None:
+   708→   708→    code = normalize_country(country)
+   709→   709→    init_db(code)
+   710→   710→    conn = _get_connection(code)
+   711→   711→    conn.execute(
+   712→   712→        """
+   713→   713→        INSERT INTO vehicles (
+   714→   714→            vehicle_id, country, route, driver, max_occupancy, brand, model,
+   715→   715→            plate_number, vehicle_type, year, registration_number, status
+   716→   716→        )
+   717→   717→        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   718→   718→        ON CONFLICT(vehicle_id) DO UPDATE SET
+   719→   719→            country=excluded.country,
+   720→   720→            route=excluded.route,
+   721→   721→            driver=excluded.driver,
+   722→   722→            max_occupancy=excluded.max_occupancy,
+   723→   723→            brand=excluded.brand,
+   724→   724→            model=excluded.model,
+   725→   725→            plate_number=excluded.plate_number,
+   726→   726→            vehicle_type=excluded.vehicle_type,
+   727→   727→            year=excluded.year,
+   728→   728→            registration_number=excluded.registration_number,
+   729→   729→            status=excluded.status
+   730→   730→        """,
+   731→   731→        (
+   732→   732→            vehicle_id, code, route, driver, max_occupancy, brand, model,
+   733→   733→            plate_number, vehicle_type, year, registration_number, status,
+   734→   734→        ),
+   735→   735→    )
+   736→   736→    conn.commit()
+   737→   737→
+   738→   738→
+   739→   739→def delete_vehicle(vehicle_id: str) -> None:
+   740→   740→    for code in COUNTRY_CODES:
+   741→   741→        init_db(code)
+   742→   742→        conn = _get_connection(code)
+   743→   743→        conn.execute("DELETE FROM vehicles WHERE vehicle_id = ?", (vehicle_id,))
+   744→   744→        conn.commit()
+   745→   745→
+   746→   746→
+   747→   747→# ────────────────────────────────────────────────────────────────
+   748→   748→# Incident / alert queries
+   749→   749→# ────────────────────────────────────────────────────────────────
+   750→   750→
+   751→   751→def list_incidents(limit: int = 50, country: str | None = None) -> list[dict[str, Any]]:
+   752→   752→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   753→   753→    result: list[dict[str, Any]] = []
+   754→   754→    for code in countries:
+   755→   755→        init_db(code)
+   756→   756→        conn = _get_connection(code)
+   757→   757→        rows = conn.execute(
+   758→   758→            """
+   759→   759→            SELECT id, severity, vehicle_id, route, message, timestamp, acknowledged,
+   760→   760→                   verification_status, resolution_note, verified_at
+   761→   761→            FROM operator_alerts
+   762→   762→            ORDER BY timestamp DESC
+   763→   763→            LIMIT ?
+   764→   764→            """,
+   765→   765→            (limit,),
+   766→   766→        ).fetchall()
+   767→   767→        result.extend(dict(row) | {"acknowledged": bool(row["acknowledged"])} for row in rows)
+   768→   768→    return sorted(result, key=lambda row: row.get("timestamp") or "", reverse=True)[:limit]
+   769→   769→
+   770→   770→
+   771→   771→# ────────────────────────────────────────────────────────────────
+   772→   772→# Database status / maintenance
+   773→   773→# ────────────────────────────────────────────────────────────────
+   774→   774→
+   775→   775→def database_status(country: str | None = None) -> dict[str, Any]:
+   776→   776→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   777→   777→    tables = ["telemetry_logs", "vehicle_states", "operator_alerts", "operator_feedback", "chatbot_queries", "routes", "route_points", "vehicles"]
+   778→   778→    counts = {table: 0 for table in tables}
+   779→   779→    load_rows: list[dict[str, Any]] = []
+   780→   780→    vehicle_rows: list[dict[str, Any]] = []
+   781→   781→    alert_totals: dict[str, int] = {}
+   782→   782→    recent_chats: list[dict[str, Any]] = []
+   783→   783→    country_statuses: dict[str, Any] = {}
+   784→   784→    for code in countries:
+   785→   785→        init_db(code)
+   786→   786→        conn = _get_connection(code)
+   787→   787→        country_counts = {
+   788→   788→            table: conn.execute(f"SELECT COUNT(*) AS count FROM {table}").fetchone()["count"]
+   789→   789→            for table in tables
+   790→   790→        }
+   791→   791→        for table, count in country_counts.items():
+   792→   792→            counts[table] += int(count)
+   793→   793→        country_statuses[code] = {
+   794→   794→            "path": str(database_path(code)),
+   795→   795→            "exists": database_path(code).exists(),
+   796→   796→            "tables": country_counts,
+   797→   797→        }
+   798→   798→        load_rows.extend(dict(row) | {"country": code} for row in conn.execute(
+   799→   799→            """
+   800→   800→            WITH recent_logs AS (
+   801→   801→                SELECT route, occupancy, tier
+   802→   802→                FROM telemetry_logs
+   803→   803→                ORDER BY id DESC
+   804→   804→                LIMIT 5000
+   805→   805→            )
+   806→   806→            SELECT route,
+   807→   807→                   COUNT(*) AS samples,
+   808→   808→                   ROUND(AVG(occupancy), 2) AS average_occupancy,
+   809→   809→                   SUM(CASE WHEN tier = 'blinking_red' THEN 1 ELSE 0 END) AS overloaded_samples
+   810→   810→            FROM recent_logs
+   811→   811→            GROUP BY route
+   812→   812→            ORDER BY samples DESC, route
+   813→   813→            LIMIT 8
+   814→   814→            """
+   815→   815→        ).fetchall())
+   816→   816→        vehicle_rows.extend(dict(row) | {"country": code} for row in conn.execute(
+   817→   817→            """
+   818→   818→            SELECT route,
+   819→   819→                   COUNT(*) AS vehicles,
+   820→   820→                   ROUND(AVG(occupancy), 2) AS average_occupancy,
+   821→   821→                   SUM(CASE WHEN tier IN ('red', 'blinking_red') THEN 1 ELSE 0 END) AS crowded
+   822→   822→            FROM vehicle_states
+   823→   823→            GROUP BY route
+   824→   824→            ORDER BY vehicles DESC, route
+   825→   825→            LIMIT 8
+   826→   826→            """
+   827→   827→        ).fetchall())
+   828→   828→        for row in conn.execute(
+   829→   829→            """
+   830→   830→            SELECT verification_status, COUNT(*) AS count
+   831→   831→            FROM operator_alerts
+   832→   832→            GROUP BY verification_status
+   833→   833→            ORDER BY count DESC
+   834→   834→            """
+   835→   835→        ).fetchall():
+   836→   836→            alert_totals[row["verification_status"]] = alert_totals.get(row["verification_status"], 0) + int(row["count"])
+   837→   837→        recent_chats.extend(dict(row) | {"country": code} for row in conn.execute(
+   838→   838→            """
+   839→   839→            SELECT route, query, answer, timestamp
+   840→   840→            FROM chatbot_queries
+   841→   841→            ORDER BY timestamp DESC
+   842→   842→            LIMIT 5
+   843→   843→            """
+   844→   844→        ).fetchall())
+   845→   845→    recent_chats = sorted(recent_chats, key=lambda row: row.get("timestamp") or "", reverse=True)[:5]
+   846→   846→    alert_rows = [{"verification_status": key, "count": value} for key, value in sorted(alert_totals.items())]
+   847→   847→    return {
+   848→   848→        "path": str(database_path(countries[0])) if country else str(COUNTRY_DB_DIR),
+   849→   849→        "exists": database_path(countries[0]).exists() if country else COUNTRY_DB_DIR.exists(),
+   850→   850→        "country": countries[0] if country else None,
+   851→   851→        "countries": country_statuses,
+   852→   852→        "tables": counts,
+   853→   853→        "stats": {
+   854→   854→            "telemetry_samples": counts.get("telemetry_logs", 0),
+   855→   855→            "active_vehicle_routes": len(vehicle_rows),
+   856→   856→            "chat_queries": counts.get("chatbot_queries", 0),
+   857→   857→            "open_alerts": sum(row["count"] for row in alert_rows if row["verification_status"] == "open"),
+   858→   858→        },
+   859→   859→        "route_loads": load_rows[:8],
+   860→   860→        "vehicle_routes": vehicle_rows[:8],
+   861→   861→        "alert_statuses": alert_rows,
+   862→   862→        "recent_chats": recent_chats,
+   863→   863→    }
+   864→   864→
+   865→   865→
+   866→   866→def purge_old_telemetry(days: int = 7, country: str | None = None) -> int:
+   867→   867→    """Delete telemetry logs older than N days. Returns count of deleted rows."""
+   868→   868→    cutoff = (datetime.now(UTC) - timedelta(days=days)).isoformat()
+   869→   869→    deleted = 0
+   870→   870→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   871→   871→    for code in countries:
+   872→   872→        init_db(code)
+   873→   873→        conn = _get_connection(code)
+   874→   874→        cursor = conn.execute("DELETE FROM telemetry_logs WHERE received_at < ?", (cutoff,))
+   875→   875→        conn.commit()
+   876→   876→        deleted += cursor.rowcount
+   877→   877→    return deleted
+   878→   878→
+   879→   879→
+   880→   880→def reset_database(country: str | None = None) -> None:
+   881→   881→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   882→   882→    for code in countries:
+   883→   883→        init_db(code)
+   884→   884→        conn = _get_connection(code)
+   885→   885→        conn.execute("DELETE FROM vehicles")
+   886→   886→        conn.execute("DELETE FROM route_points")
+   887→   887→        conn.execute("DELETE FROM routes")
+   888→   888→        conn.execute("DELETE FROM operator_alerts")
+   889→   889→        conn.execute("DELETE FROM operator_feedback")
+   890→   890→        conn.execute("DELETE FROM telemetry_logs")
+   891→   891→        conn.execute("DELETE FROM vehicle_states")
+   892→   892→        conn.execute("DELETE FROM chatbot_queries")
+   893→   893→        conn.commit()
+   894→   894→        _seed_routes_if_needed(conn, code)
+   895→   895→        seed_demo_vehicles(conn=conn)
+   896→   896→    invalidate_route_cache()
+   897→   897→    _LAST_TELEMETRY_LOG_WRITE.clear()
+   898→   898→
+   899→   899→
+   900→   900→def delete_all_alerts(country: str | None = None) -> None:
+   901→   901→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+   902→   902→    for code in countries:
+   903→   903→        init_db(code)
+   904→   904→        conn = _get_connection(code)
+   905→   905→        conn.execute("DELETE FROM operator_alerts")
+   906→   906→        conn.execute("DELETE FROM operator_feedback")
+   907→   907→        conn.commit()
+   908→   908→
+   909→   909→
+   910→   910→def seed_demo_vehicles(vehicles_per_route: int = 3, conn: sqlite3.Connection | None = None) -> int:
+   911→   911→    """Seed demo vehicles — reduced to 3 per route for lean demo."""
+   912→   912→    active_conn = conn or _get_connection()
+   913→   913→    drivers = [
+   914→   914→        "Jun Mercado", "Rico Santos", "Lito Garcia", "Benjie Cruz", "Mario Flores",
+   915→   915→        "Nestor Ramos", "Allan Dela Cruz", "Romy Villanueva", "Edwin Castro", "Noel Reyes",
+   916→   916→    ]
+   917→   917→    prefixes = ["NGA", "CBA", "CEB", "VHY", "GTR", "KLM", "TAL", "MVD", "BJR", "RPU"]
+   918→   918→    route_rows = active_conn.execute(
+   919→   919→        "SELECT route, country FROM routes ORDER BY route"
+   920→   920→    ).fetchall()
+   921→   921→    count = 0
+   922→   922→    for route_index, route_row in enumerate(route_rows):
+   923→   923→        route_id = route_row["route"]
+   924→   924→        for vehicle_index in range(max(1, vehicles_per_route)):
+   925→   925→            plate = f"{prefixes[(route_index + vehicle_index) % len(prefixes)]}-{route_index % 10}{vehicle_index}{(route_index + vehicle_index) % 10}{vehicle_index}"
+   926→   926→            active_conn.execute(
+   927→   927→                """
+   928→   928→                INSERT OR REPLACE INTO vehicles (vehicle_id, country, route, driver, max_occupancy, status)
+   929→   929→                VALUES (?, ?, ?, ?, ?, 'active')
+   930→   930→                """,
+   931→   931→                (
+   932→   932→                    plate,
+   933→   933→                    route_row["country"] or "PH",
+   934→   934→                    route_id,
+   935→   935→                    drivers[(route_index + vehicle_index) % len(drivers)],
+   936→   936→                    20 if vehicle_index % 3 else 22,
+   937→   937→                ),
+   938→   938→            )
+   939→   939→            count += 1
+   940→   940→    active_conn.commit()
+   941→   941→    return count
+   942→   942→
+   943→   943→
+   944→   944→# ────────────────────────────────────────────────────────────────
+   945→   945→# Route CRUD
+   946→   946→# ────────────────────────────────────────────────────────────────
+   947→   947→
+   948→   948→def save_route(
+   949→   949→    route: str,
+   950→   950→    name: str,
+   951→   951→    polyline: list[tuple[float, float]],
+   952→   952→    country: str | None = None,
+   953→   953→    region: str | None = None,
+   954→   954→    tag: str | None = None,
+   955→   955→    route_type: str | None = None,
+   956→   956→    origin_name: str | None = None,
+   957→   957→    destination_name: str | None = None,
+   958→   958→    distance_km: float | None = None,
+   959→   959→    description: str | None = None,
+   960→   960→    minimum_fare: float | None = None,
+   961→   961→    fare_per_km: float | None = None,
+   962→   962→    points: list[dict[str, Any]] | None = None,
+   963→   963→) -> None:
+   964→   964→    code = normalize_country(country)
+   965→   965→    init_db(code)
+   966→   966→    route_points = points or [
+   967→   967→        {
+   968→   968→            "sequence_order": index + 1,
+   969→   969→            "latitude": lat,
+   970→   970→            "longitude": lon,
+   971→   971→            "point_type": "origin" if index == 0 else "destination" if index == len(polyline) - 1 else "waypoint",
+   972→   972→            "label": "",
+   973→   973→        }
+   974→   974→        for index, (lat, lon) in enumerate(polyline)
+   975→   975→    ]
+   976→   976→    conn = _get_connection(code)
+   977→   977→    conn.execute(
+   978→   978→        """
+   979→   979→        INSERT INTO routes (
+   980→   980→            route, name, polyline_json, country, region, tag, route_type,
+   981→   981→            origin_name, destination_name, distance_km, description, minimum_fare, fare_per_km
+   982→   982→        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+   983→   983→        ON CONFLICT(route) DO UPDATE SET
+   984→   984→            name=excluded.name,
+   985→   985→            polyline_json=excluded.polyline_json,
+   986→   986→            country=excluded.country,
+   987→   987→            region=excluded.region,
+   988→   988→            tag=excluded.tag,
+   989→   989→            route_type=excluded.route_type,
+   990→   990→            origin_name=excluded.origin_name,
+   991→   991→            destination_name=excluded.destination_name,
+   992→   992→            distance_km=excluded.distance_km,
+   993→   993→            description=excluded.description,
+   994→   994→            minimum_fare=excluded.minimum_fare,
+   995→   995→            fare_per_km=excluded.fare_per_km
+   996→   996→        """,
+   997→   997→        (route, name, json.dumps(polyline), code, region, tag, route_type, origin_name, destination_name, distance_km, description, minimum_fare, fare_per_km),
+   998→   998→    )
+   999→   999→    conn.execute("DELETE FROM route_points WHERE route = ?", (route,))
+  1000→  1000→    conn.executemany(
+  1001→  1001→        """
+  1002→  1002→        INSERT INTO route_points (route, sequence_order, latitude, longitude, point_type, label)
+  1003→  1003→        VALUES (?, ?, ?, ?, ?, ?)
+  1004→  1004→        """,
+  1005→  1005→        [
+  1006→  1006→            (
+  1007→  1007→                route,
+  1008→  1008→                int(point.get("sequence_order") or index + 1),
+  1009→  1009→                float(point["latitude"]),
+  1010→  1010→                float(point["longitude"]),
+  1011→  1011→                str(point.get("point_type") or "waypoint"),
+  1012→  1012→                str(point.get("label") or ""),
+  1013→  1013→            )
+  1014→  1014→            for index, point in enumerate(route_points)
+  1015→  1015→        ],
+  1016→  1016→    )
+  1017→  1017→    conn.commit()
+  1018→  1018→    invalidate_route_cache()
+  1019→  1019→
+  1020→  1020→
+  1021→  1021→def delete_route(route: str, country: str | None = None) -> None:
+  1022→  1022→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+  1023→  1023→    for code in countries:
+  1024→  1024→        init_db(code)
+  1025→  1025→        conn = _get_connection(code)
+  1026→  1026→        conn.execute("DELETE FROM routes WHERE route = ? OR tag = ?", (route, route))
+  1027→  1027→        conn.commit()
+  1028→  1028→    invalidate_route_cache()
+  1029→  1029→
+  1030→  1030→
+  1031→  1031→def invalidate_route_cache() -> None:
+  1032→  1032→    global _ROUTE_CACHE
+  1033→  1033→    _ROUTE_CACHE = None
+  1034→  1034→    _ROUTE_POLYLINE_CACHE.clear()
+  1035→  1035→
+  1036→  1036→
+  1037→  1037→def route_exists(route: str, country: str | None = None) -> bool:
+  1038→  1038→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+  1039→  1039→    for code in countries:
+  1040→  1040→        init_db(code)
+  1041→  1041→        conn = _get_connection(code)
+  1042→  1042→        row = conn.execute("SELECT 1 FROM routes WHERE route = ? OR tag = ? LIMIT 1", (route, route)).fetchone()
+  1043→  1043→        if row is not None:
+  1044→  1044→            return True
+  1045→  1045→    return False
+  1046→  1046→
+  1047→  1047→
+  1048→  1048→def route_name_exists(name: str, exclude_route: str | None = None, country: str | None = None) -> bool:
+  1049→  1049→    countries = [normalize_country(country)] if country else list(COUNTRY_CODES)
+  1050→  1050→    sql = "SELECT route FROM routes WHERE lower(name) = lower(?)"
+  1051→  1051→    params: tuple[Any, ...] = (name,)
+  1052→  1052→    if exclude_route:
+  1053→  1053→        sql += " AND route <> ? AND COALESCE(tag, '') <> ?"
+  1054→  1054→        params = (*params, exclude_route, exclude_route)
+  1055→  1055→    for code in countries:
+  1056→  1056→        init_db(code)
+  1057→  1057→        conn = _get_connection(code)
+  1058→  1058→        row = conn.execute(sql, params).fetchone()
+  1059→  1059→        if row is not None:
+  1060→  1060→            return True
+  1061→  1061→    return False
+  1062→  1062→
+  1063→  1063→
+  1064→  1064→def load_route_polyline(route: str) -> list[tuple[float, float]]:
+  1065→  1065→    cache_key = route
+  1066→  1066→    if cache_key in _ROUTE_POLYLINE_CACHE:
+  1067→  1067→        return list(_ROUTE_POLYLINE_CACHE[cache_key])
+  1068→  1068→    row = None
+  1069→  1069→    for code in COUNTRY_CODES:
+  1070→  1070→        init_db(code)
+  1071→  1071→        conn = _get_connection(code)
+  1072→  1072→        row = conn.execute("SELECT polyline_json FROM routes WHERE route = ? OR tag = ? LIMIT 1", (route, route)).fetchone()
+  1073→  1073→        if row is not None:
+  1074→  1074→            break
+  1075→  1075→    if row is None:
+  1076→  1076→        return []
+  1077→  1077→    try:
+  1078→  1078→        points = json.loads(row["polyline_json"]) if row["polyline_json"] else []
+  1079→  1079→    except Exception:
+  1080→  1080→        return []
+  1081→  1081→    polyline = [(float(lat), float(lon)) for lat, lon in points]
+  1082→  1082→    _ROUTE_POLYLINE_CACHE[cache_key] = polyline
+  1083→  1083→    return list(polyline)
+  1084→  1084→
+  1085→  1085→
+  1086→  1086→def load_routes(country: str | None = None) -> list[dict[str, Any]]:
+  1087→  1087→    """Load routes with optional country filter. Uses caching."""
+  1088→  1088→    global _ROUTE_CACHE
+  1089→  1089→    if _ROUTE_CACHE is not None:
+  1090→  1090→        result = _ROUTE_CACHE
+  1091→  1091→        if country:
+  1092→  1092→            code = normalize_country(country)
+  1093→  1093→            result = [r for r in result if (r.get("country") or "") == code]
+  1094→  1094→        return deepcopy(result)
+  1095→  1095→    result: list[dict[str, Any]] = []
+  1096→  1096→    for code in COUNTRY_CODES:
+  1097→  1097→        init_db(code)
+  1098→  1098→        conn = _get_connection(code)
+  1099→  1099→        rows = conn.execute(
+  1100→  1100→            "SELECT route, name, polyline_json, country, region, tag, route_type, origin_name, destination_name, distance_km, description, minimum_fare, fare_per_km FROM routes"
+  1101→  1101→        ).fetchall()
+  1102→  1102→        point_rows = conn.execute(
+  1103→  1103→            "SELECT route, sequence_order, latitude, longitude, point_type, label FROM route_points ORDER BY route, sequence_order"
+  1104→  1104→        ).fetchall()
+  1105→  1105→        points_by_route: dict[str, list[dict[str, Any]]] = {}
+  1106→  1106→        for point in point_rows:
+  1107→  1107→            item = dict(point)
+  1108→  1108→            item["name"] = item.get("label") or item.get("point_type") or f"Point {item.get('sequence_order', '')}".strip()
+  1109→  1109→            points_by_route.setdefault(point["route"], []).append(item)
+  1110→  1110→        for row in rows:
+  1111→  1111→            try:
+  1112→  1112→                poly = json.loads(row["polyline_json"]) if row["polyline_json"] else []
+  1113→  1113→            except Exception:
+  1114→  1114→                poly = []
+  1115→  1115→            metadata = route_metadata(row["route"])
+  1116→  1116→            structured_points = points_by_route.get(row["route"], [])
+  1117→  1117→            stops = structured_points or metadata.get("stops") or _display_stops(poly, row["name"])
+  1118→  1118→            city = metadata.get("city") or ""
+  1119→  1119→            endpoints = metadata.get("endpoints") or ([stops[0]["name"], stops[-1]["name"]] if len(stops) >= 2 else [])
+  1120→  1120→            result.append({
+  1121→  1121→                "route": row["route"],
+  1122→  1122→                "name": row["name"],
+  1123→  1123→                "country": row["country"] or code,
+  1124→  1124→                "region": row["region"],
+  1125→  1125→                "tag": row["tag"],
+  1126→  1126→                "route_type": row["route_type"],
+  1127→  1127→                "origin_name": row["origin_name"],
+  1128→  1128→                "destination_name": row["destination_name"],
+  1129→  1129→                "distance_km": row["distance_km"],
+  1130→  1130→                "description": row["description"],
+  1131→  1131→                "minimum_fare": row["minimum_fare"],
+  1132→  1132→                "fare_per_km": row["fare_per_km"],
+  1133→  1133→                "polyline": [{"latitude": float(lat), "longitude": float(lon)} for lat, lon in poly],
+  1134→  1134→                "points": structured_points,
+  1135→  1135→                "stops": stops,
+  1136→  1136→                "zone": metadata.get("zone") or city,
+  1137→  1137→                "type": metadata.get("type") or "PUV",
+  1138→  1138→                "landmarks": metadata.get("landmarks") or [stop["name"] for stop in stops[:6]],
+  1139→  1139→                "endpoints": endpoints,
+  1140→  1140→            })
+  1141→  1141→    _ROUTE_CACHE = result
+  1142→  1142→    filtered = result
+  1143→  1143→    if country:
+  1144→  1144→        code = normalize_country(country)
+  1145→  1145→        filtered = [r for r in result if (r.get("country") or "") == code]
+  1146→  1146→    return deepcopy(filtered)
+  1147→  1147→
+  1148→  1148→
+  1149→  1149→def _display_stops(poly: list[list[float]] | list[tuple[float, float]], name: str) -> list[dict[str, Any]]:
+  1150→  1150→    if not poly:
+  1151→  1151→        return []
+  1152→  1152→    if len(poly) <= 8:
+  1153→  1153→        indexes = list(range(len(poly)))
+  1154→  1154→    else:
+  1155→  1155→        indexes = sorted({0, len(poly) - 1, *[round((len(poly) - 1) * ratio) for ratio in (0.2, 0.35, 0.5, 0.65, 0.8)]})
+  1156→  1156→    labels = ["Origin", "Checkpoint 1", "Checkpoint 2", "Mid-route", "Checkpoint 3", "Checkpoint 4", "Terminal"]
+  1157→  1157→    stops = []
+  1158→  1158→    for display_index, point_index in enumerate(indexes):
+  1159→  1159→        lat, lon = poly[point_index]
+  1160→  1160→        label = labels[min(display_index, len(labels) - 1)]
+  1161→  1161→        stops.append({
+  1162→  1162→            "stop_id": point_index,
+  1163→  1163→            "name": f"{name} {label}",
+  1164→  1164→            "latitude": float(lat),
+  1165→  1165→            "longitude": float(lon),
+  1166→  1166→        })
+  1167→  1167→    return stops
+  1168→  1168→
+  1169→  1169→
+  1170→  1170→# ────────────────────────────────────────────────────────────────
+  1171→  1171→# Row converters
+  1172→  1172→# ────────────────────────────────────────────────────────────────
+  1173→  1173→
+  1174→  1174→def _vehicle_from_row(row: sqlite3.Row) -> VehicleState:
+  1175→  1175→    return VehicleState(
+  1176→  1176→        vehicle_id=row["vehicle_id"],
+  1177→  1177→        route=row["route"],
+  1178→  1178→        latitude=row["latitude"],
+  1179→  1179→        longitude=row["longitude"],
+  1180→  1180→        occupancy=row["occupancy"],
+  1181→  1181→        capacity=row["capacity"],
+  1182→  1182→        tier=row["tier"],
+  1183→  1183→        timestamp=row["source_timestamp"],
+  1184→  1184→        eta_minutes=row["eta_minutes"],
+  1185→  1185→        eta_source=row["eta_source"],
+  1186→  1186→        next_stop_id=row["next_stop_id"],
+  1187→  1187→        route_deviation=json.loads(row["route_deviation_json"]),
+  1188→  1188→        signal_quality=row["signal_quality"],
+  1189→  1189→        speed_kph=row["speed_kph"],
+  1190→  1190→        heading=row["heading"],
+  1191→  1191→        direction=row["direction"],
+  1192→  1192→        status=row["status"] or "active",
+  1193→  1193→    )
+  1194→  1194→
+  1195→  1195→
+  1196→  1196→def _alert_from_row(row: sqlite3.Row, acknowledged: Optional[bool] = None) -> OperatorAlert:
+  1197→  1197→    return OperatorAlert(
+  1198→  1198→        id=row["id"],
+  1199→  1199→        severity=row["severity"],
+  1200→  1200→        vehicle_id=row["vehicle_id"],
+  1201→  1201→        route=row["route"],
+  1202→  1202→        message=row["message"],
+  1203→  1203→        timestamp=row["timestamp"],
+  1204→  1204→        acknowledged=bool(row["acknowledged"]) if acknowledged is None else acknowledged,
+  1205→  1205→        verification_status=row["verification_status"] or "open",
+  1206→  1206→        resolution_note=row["resolution_note"],
+  1207→  1207→        verified_at=row["verified_at"],
+  1208→  1208→    )
+  1209→  1209→

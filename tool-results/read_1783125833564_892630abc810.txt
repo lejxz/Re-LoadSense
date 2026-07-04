@@ -1,0 +1,621 @@
+     1→     1→function drawMap(containerId, routeFilter) {
+     2→     2→    const el = qs(containerId);
+     3→     3→    if (!el) return;
+     4→     4→    if (typeof L === 'undefined') return;
+     5→     5→
+     6→     6→    const isMobile = containerId === 'mobileMap';
+     7→     7→    const isOperator = containerId === 'operatorMap' || containerId === 'routePreviewMap';
+     8→     8→    const isOverviewMap = containerId === "operatorMap" && !routeFilter;
+     9→     9→    const isRouteMap = !isOverviewMap && (Boolean(routeFilter) || containerId === "routePreviewMap" || isMobile);
+    10→    10→
+    11→    11→    // initialize map if needed
+    12→    12→    if (!state.maps[containerId]) {
+    13→    13→      const map = L.map(containerId, { zoomControl: false, attributionControl: false }).setView([10.3157, 123.8854], 13);
+    14→    14→      L.control.zoom({ position: containerId === "operatorMap" ? "topright" : "bottomright" }).addTo(map);
+    15→    15→      // Tile layer definitions – Transport is the default
+    16→    16→      const TILE_LAYERS = {
+    17→    17→        'Transport': L.tileLayer('https://tile.memomaps.de/tilegen/{z}/{x}/{y}.png', {
+    18→    18→          maxZoom: 19,
+    19→    19→          attribution: '&copy; <a href="https://memomaps.de/">memomaps.de</a> CC-BY-SA, map data &copy; <a href="https://openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    20→    20→        }),
+    21→    21→        'Standard': L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    22→    22→          maxZoom: 19,
+    23→    23→          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    24→    24→        }),
+    25→    25→        'Cycle': L.tileLayer('https://{s}.tile-cyclosm.openstreetmap.fr/cyclosm/{z}/{x}/{y}.png', {
+    26→    26→          maxZoom: 20,
+    27→    27→          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    28→    28→        }),
+    29→    29→        'Light': L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    30→    30→          maxZoom: 20,
+    31→    31→          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/">CARTO</a>'
+    32→    32→        }),
+    33→    33→        'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    34→    34→          maxZoom: 20,
+    35→    35→          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/">CARTO</a>'
+    36→    36→        })
+    37→    37→      };
+    38→    38→      const tileLayer = TILE_LAYERS['Standard'].addTo(map);
+    39→    39→      tileLayer.on('tileerror', function(e) {
+    40→    40→        if (e.tile) e.tile.style.display = 'none';
+    41→    41→      });
+    42→    42→      state.maps[containerId] = map;
+    43→    43→      state.mapTileLayers[containerId] = TILE_LAYERS;
+    44→    44→      state.mapActiveTile[containerId] = tileLayer;
+    45→    45→      state.mapLayers[containerId] = L.layerGroup().addTo(map);
+    46→    46→      addMapControls(containerId, map, TILE_LAYERS, 'Standard');
+    47→    47→      // clustering layer
+    48→    48→      try {
+    49→    49→        state.mapClusters[containerId] = L.markerClusterGroup({
+    50→    50→          iconCreateFunction(cluster) {
+    51→    51→            const markers = cluster.getAllChildMarkers();
+    52→    52→            const overloaded = markers.filter(marker => marker.options.loadsenseTier === "blinking_red").length;
+    53→    53→            const label = overloaded ? `${markers.length}/${overloaded}` : String(markers.length);
+    54→    54→            return L.divIcon({ html: `<div><span>${label}</span></div>`, className: "marker-cluster marker-cluster-small", iconSize: L.point(40, 40) });
+    55→    55→          },
+    56→    56→        });
+    57→    57→        state.mapClusters[containerId].addTo(map);
+    58→    58→      } catch (e) {
+    59→    59→        state.mapClusters[containerId] = null;
+    60→    60→      }
+    61→    61→      // Track user interaction to disable auto-fit
+    62→    62→      map.on('movestart', function (e) {
+    63→    63→        // Only set userInteracted for moves not triggered programmatically
+    64→    64→        if (!map._programmaticMove) {
+    65→    65→          state.userInteracted = true;
+    66→    66→        }
+    67→    67→      });
+    68→    68→    }
+    69→    69→    const map = state.maps[containerId];
+    70→    70→    const layerGroup = state.mapLayers[containerId];
+    71→    71→    const clusterGroup = state.mapClusters[containerId];
+    72→    72→    // clear route polylines and route-point layers (redrawn each call)
+    73→    73→    layerGroup.clearLayers();
+    74→    74→
+    75→    75→    // Initialize incremental vehicle marker tracking
+    76→    76→    state.vehicleMarkers = state.vehicleMarkers || {};
+    77→    77→    if (!state.vehicleMarkers[containerId]) state.vehicleMarkers[containerId] = {};
+    78→    78→    const existingMarkers = state.vehicleMarkers[containerId];
+    79→    79→
+    80→    80→    const routes = isOverviewMap ? [] : routeFilter ? state.routes.filter(route => route.route === routeFilter) : state.routes;
+    81→    81→    // draw route polylines
+    82→    82→    for (const route of routes) {
+    83→    83→      const structuredPoints = [...(route.points || [])].sort((a, b) => Number(a.sequence_order || 0) - Number(b.sequence_order || 0));
+    84→    84→      const polyPoints = structuredPoints.length ? structuredPoints : (route.polyline || []);
+    85→    85→      const routeStops = structuredPoints.length ? structuredPoints : (route.stops || []);
+    86→    86→      // Support both new structured points and legacy [lat, lon] arrays
+    87→    87→      const validPoints = polyPoints.filter(p => p && (p.latitude !== undefined || Array.isArray(p)));
+    88→    88→      const latlngs = validPoints.map(p => Array.isArray(p) ? [Number(p[0]), Number(p[1])] : [Number(p.latitude), Number(p.longitude)]);
+    89→    89→      
+    90→    90→      if (latlngs.length) {
+    91→    91→          const selectedRoute = route.route === state.selectedRoute;
+    92→    92→          if (selectedRoute) {
+    93→    93→            L.polyline(latlngs, { color: '#ffffff', weight: 12, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+    94→    94→            L.polyline(latlngs, { color: '#0b57d0', weight: 8, opacity: 0.98, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+    95→    95→            L.polyline(latlngs, { color: '#58a6ff', weight: 3, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+    96→    96→            
+    97→    97→            let stopNumber = 0;
+    98→    98→            (routeStops.length ? routeStops : validPoints).forEach((point, idx, allPoints) => {
+    99→    99→              const isObj = !Array.isArray(point);
+   100→   100→              const ptLat = isObj ? Number(point.latitude) : Number(point[0]);
+   101→   101→              const ptLon = isObj ? Number(point.longitude) : Number(point[1]);
+   102→   102→              let type = isObj ? (point.point_type || 'checkpoint') : 'checkpoint';
+   103→   103→              if (idx === 0) type = 'origin';
+   104→   104→              if (idx === allPoints.length - 1) type = 'end';
+   105→   105→              // Normalize legacy 'turn' type to 'waypoint'
+   106→   106→              if (type === 'turn' || type === 'checkpoint') type = 'waypoint';
+   107→   107→
+   108→   108→              // Show only rider-meaningful pins on mobile to keep the UI clean.
+   109→   109→              if (isMobile) {
+   110→   110→                if (type !== 'origin' && type !== 'end' && type !== 'end_of_route'
+   111→   111→                    && type !== 'alight_or_board_stop' && type !== 'boarding_stop') {
+   112→   112→                  return;
+   113→   113→                }
+   114→   114→              }
+   115→   115→
+   116→   116→              const label = isObj && point.label ? point.label : type.replace(/_/g, ' ');
+   117→   117→              let iconClass, svgIcon, iconSize, iconAnchor;
+   118→   118→
+   119→   119→              if (type === 'origin') {
+   120→   120→                iconClass = 'route-point-icon route-point-origin';
+   121→   121→                svgIcon = `<svg viewBox="0 0 32 32" width="24" height="24"><circle cx="16" cy="16" r="14" fill="#16a34a" stroke="#fff" stroke-width="2"/><text x="16" y="22" text-anchor="middle" fill="#fff" font-size="16" font-weight="bold" font-family="sans-serif">A</text></svg>`;
+   122→   122→                iconSize = [24, 24];
+   123→   123→                iconAnchor = [12, 12];
+   124→   124→              } else if (type === 'end' || type === 'end_of_route') {
+   125→   125→                iconClass = 'route-point-icon route-point-end';
+   126→   126→                svgIcon = `<svg viewBox="0 0 32 32" width="24" height="24"><circle cx="16" cy="16" r="14" fill="#dc2626" stroke="#fff" stroke-width="2"/><text x="16" y="22" text-anchor="middle" fill="#fff" font-size="16" font-weight="bold" font-family="sans-serif">B</text></svg>`;
+   127→   127→                iconSize = [24, 24];
+   128→   128→                iconAnchor = [12, 12];
+   129→   129→              } else if (type === 'alight_or_board_stop' || type === 'boarding_stop') {
+   130→   130→                stopNumber++;
+   131→   131→                iconClass = 'route-point-icon route-point-stop';
+   132→   132→                svgIcon = `<svg viewBox="0 0 28 28" width="20" height="20"><circle cx="14" cy="14" r="12" fill="#2563eb" stroke="#fff" stroke-width="2"/><text x="14" y="19" text-anchor="middle" fill="#fff" font-size="12" font-weight="bold" font-family="sans-serif">${stopNumber}</text></svg>`;
+   133→   133→                iconSize = [20, 20];
+   134→   134→                iconAnchor = [10, 10];
+   135→   135→              } else if (type === 'waypoint') {
+   136→   136→                iconClass = 'route-point-icon route-point-waypoint';
+   137→   137→                svgIcon = `<svg viewBox="0 0 20 20" width="14" height="14"><rect x="3" y="3" width="14" height="14" rx="2" transform="rotate(45 10 10)" fill="#f97316" stroke="#fff" stroke-width="1.5"/></svg>`;
+   138→   138→                iconSize = [14, 14];
+   139→   139→                iconAnchor = [7, 7];
+   140→   140→              } else if (type === 'road_segment') {
+   141→   141→                iconClass = 'route-point-icon route-point-segment';
+   142→   142→                svgIcon = `<svg viewBox="0 0 12 12" width="8" height="8"><circle cx="6" cy="6" r="4" fill="#9ca3af"/></svg>`;
+   143→   143→                iconSize = [8, 8];
+   144→   144→                iconAnchor = [4, 4];
+   145→   145→              } else {
+   146→   146→                // Fallback: treat unknown types as waypoints
+   147→   147→                iconClass = 'route-point-icon route-point-waypoint';
+   148→   148→                svgIcon = `<svg viewBox="0 0 20 20" width="14" height="14"><rect x="3" y="3" width="14" height="14" rx="2" transform="rotate(45 10 10)" fill="#f97316" stroke="#fff" stroke-width="1.5"/></svg>`;
+   149→   149→                iconSize = [14, 14];
+   150→   150→                iconAnchor = [7, 7];
+   151→   151→              }
+   152→   152→
+   153→   153→              const marker = L.marker([ptLat, ptLon], {
+   154→   154→                icon: L.divIcon({
+   155→   155→                  className: iconClass,
+   156→   156→                  html: svgIcon,
+   157→   157→                  iconSize: iconSize,
+   158→   158→                  iconAnchor: iconAnchor,
+   159→   159→                }),
+   160→   160→              });
+   161→   161→              marker.bindPopup(`<strong>${escapeHtml(label.charAt(0).toUpperCase() + label.slice(1))}</strong><br/><small>${escapeHtml(type.replace(/_/g, ' '))}</small><br/><small>LAT: ${ptLat.toFixed(5)}, LONG: ${ptLon.toFixed(5)}</small>`)
+   162→   162→                    .bindTooltip(escapeHtml(label), { direction: 'top', offset: [0, -5] });
+   163→   163→              marker.addTo(layerGroup);
+   164→   164→            });
+   165→   165→          } else if (!isOverviewMap) {
+   166→   166→            L.polyline(latlngs, { color: '#9aa0a6', weight: 2, opacity: routeFilter ? 0.25 : 0.16, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+   167→   167→          }
+   168→   168→      }
+   169→   169→    }
+   170→   170→    // Incremental vehicle marker updates
+   171→   171→    const vehicles = state.vehicles.filter(vehicle => !routeFilter || vehicle.route === routeFilter).filter(vehicle => Number(vehicle.latitude) && Number(vehicle.longitude));
+   172→   172→    const currentVehicleIds = new Set();
+   173→   173→    for (const vehicle of vehicles) {
+   174→   174→      const lat = Number(vehicle.latitude);
+   175→   175→      const lon = Number(vehicle.longitude);
+   176→   176→      const tier = tierClass(vehicle.tier);
+   177→   177→      const vid = vehicle.vehicle_id;
+   178→   178→      currentVehicleIds.add(vid);
+   179→   179→
+   180→   180→      if (existingMarkers[vid]) {
+   181→   181→        // Update existing marker position and icon
+   182→   182→        const existing = existingMarkers[vid];
+   183→   183→        existing.marker.setLatLng([lat, lon]);
+   184→   184→        // Update icon if tier changed
+   185→   185→        if (existing.tier !== vehicle.tier) {
+   186→   186→          const newIcon = L.divIcon({
+   187→   187→            className: 'vehicle-icon-wrapper',
+   188→   188→            html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg></span>`,
+   189→   189→            iconSize: [28, 28],
+   190→   190→            iconAnchor: [14, 14],
+   191→   191→            popupAnchor: [0, -14]
+   192→   192→          });
+   193→   193→          existing.marker.setIcon(newIcon);
+   194→   194→          existing.tier = vehicle.tier;
+   195→   195→        }
+   196→   196→        // Update popup content
+   197→   197→        const popup = `<div class="map-popup-actions"><strong>${escapeHtml(vehicle.vehicle_id)}</strong><span>Route ${escapeHtml(vehicle.route)}</span><span>Load ${escapeHtml(String(vehicle.occupancy))}/${escapeHtml(String(vehicle.capacity))} · ETA ${escapeHtml(String(vehicle.eta_minutes))} min</span><div><button onclick="showVehicleDetailsModal('${escapeHtml(vehicle.vehicle_id)}')">Details</button><button onclick="reportVehicleIncidentModal('${escapeHtml(vehicle.vehicle_id)}','${escapeHtml(vehicle.route)}')">Report</button></div></div>`;
+   198→   198→        existing.marker.setPopupContent(popup);
+   199→   199→      } else {
+   200→   200→        // Create new marker
+   201→   201→        const icon = L.divIcon({
+   202→   202→          className: 'vehicle-icon-wrapper',
+   203→   203→          html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg></span>`,
+   204→   204→          iconSize: [28, 28],
+   205→   205→          iconAnchor: [14, 14],
+   206→   206→          popupAnchor: [0, -14]
+   207→   207→        });
+   208→   208→        const marker = L.marker([lat, lon], { icon, loadsenseTier: vehicle.tier });
+   209→   209→        const popup = `<div class="map-popup-actions"><strong>${escapeHtml(vehicle.vehicle_id)}</strong><span>Route ${escapeHtml(vehicle.route)}</span><span>Load ${escapeHtml(String(vehicle.occupancy))}/${escapeHtml(String(vehicle.capacity))} · ETA ${escapeHtml(String(vehicle.eta_minutes))} min</span><div><button onclick="showVehicleDetailsModal('${escapeHtml(vehicle.vehicle_id)}')">Details</button><button onclick="reportVehicleIncidentModal('${escapeHtml(vehicle.vehicle_id)}','${escapeHtml(vehicle.route)}')">Report</button></div></div>`;
+   210→   210→        marker.bindPopup(popup);
+   211→   211→        marker.bindTooltip(`${escapeHtml(vehicle.vehicle_id)} (${escapeHtml(vehicle.route)})` , { permanent: false });
+   212→   212→        if (clusterGroup) {
+   213→   213→          clusterGroup.addLayer(marker);
+   214→   214→        } else {
+   215→   215→          marker.addTo(layerGroup);
+   216→   216→        }
+   217→   217→        existingMarkers[vid] = { marker, tier: vehicle.tier };
+   218→   218→      }
+   219→   219→    }
+   220→   220→    // Remove markers for vehicles that no longer exist
+   221→   221→    for (const vid of Object.keys(existingMarkers)) {
+   222→   222→      if (!currentVehicleIds.has(vid)) {
+   223→   223→        const entry = existingMarkers[vid];
+   224→   224→        if (clusterGroup) {
+   225→   225→          clusterGroup.removeLayer(entry.marker);
+   226→   226→        } else {
+   227→   227→          layerGroup.removeLayer(entry.marker);
+   228→   228→        }
+   229→   229→        delete existingMarkers[vid];
+   230→   230→      }
+   231→   231→    }
+   232→   232→    drawDestinationLayer(containerId, layerGroup);
+   233→   233→    // Only fitBounds when user has not interacted with the map
+   234→   234→    if (!state.userInteracted && vehicles.length) {
+   235→   235→      const allPoints = vehicles.map(v => [Number(v.latitude), Number(v.longitude)]);
+   236→   236→      map._programmaticMove = true;
+   237→   237→      try { map.fitBounds(L.latLngBounds(allPoints), { maxZoom: 15, padding: [28, 28] }); } catch (e) {}
+   238→   238→      map._programmaticMove = false;
+   239→   239→    }
+   240→   240→  }
+   241→   241→
+   242→   242→  function setupRecenterButtons() {
+   243→   243→    const recenter = qs("recenterBtn");
+   244→   244→    const opRecenter = qs("opRecenterBtn");
+   245→   245→    if (recenter) recenter.addEventListener("click", () => {
+   246→   246→      const map = state.maps.mobileMap;
+   247→   247→      if (!map) return;
+   248→   248→      if (state.lastPosition) {
+   249→   249→        map.setView([state.lastPosition.latitude, state.lastPosition.longitude], 15);
+   250→   250→      } else {
+   251→   251→        fitRoute("mobileMap", state.selectedRoute);
+   252→   252→      }
+   253→   253→    });
+   254→   254→    if (opRecenter) opRecenter.addEventListener("click", () => {
+   255→   255→      if (state.maps.operatorMap) fitFleet("operatorMap");
+   256→   256→    });
+   257→   257→  }
+   258→   258→
+   259→   259→  function fitRoute(containerId, routeId) {
+   260→   260→    const map = state.maps[containerId];
+   261→   261→    const route = state.routes.find(item => item.route === routeId);
+   262→   262→    const points = (route?.polyline || []).filter(isMapCoordinate).map(point => [Number(point.latitude), Number(point.longitude)]);
+   263→   263→    if (map && points.length && typeof L !== "undefined") {
+   264→   264→      try { map.fitBounds(L.latLngBounds(points), { maxZoom: 15, padding: [28, 28] }); } catch (e) {}
+   265→   265→    }
+   266→   266→  }
+   267→   267→
+   268→   268→  function fitFleet(containerId) {
+   269→   269→    const map = state.maps[containerId];
+   270→   270→    const points = state.vehicles.filter(isMapCoordinate).map(vehicle => [Number(vehicle.latitude), Number(vehicle.longitude)]);
+   271→   271→    if (map && points.length && typeof L !== "undefined") {
+   272→   272→      try { map.fitBounds(L.latLngBounds(points), { maxZoom: 15, padding: [28, 28] }); } catch (e) {}
+   273→   273→    }
+   274→   274→  }
+   275→   275→
+   276→   276→  function previewRoute(routeId, containerId = "operatorMap") {
+   277→   277→    const route = state.routes.find(item => item.route === routeId);
+   278→   278→    if (!route) return;
+   279→   279→    state.selectedRoute = routeId;
+   280→   280→    const modal = qs("routePreviewModal");
+   281→   281→    if (modal && containerId === "routePreviewMap") {
+   282→   282→      modal.classList.remove("hidden");
+   283→   283→      qs("routePreviewTitle").textContent = routeDisplayTitle(route);
+   284→   284→      const summary = routeSummary(route);
+   285→   285→      qs("routePreviewMeta").textContent = `${cityName(route)} - ${summary.stopCount} stops - ${summary.vehicleCount} live PUVs`;
+   286→   286→    }
+   287→   287→    drawMap(containerId, routeId);
+   288→   288→    setTimeout(() => {
+   289→   289→      fitRoute(containerId, routeId);
+   290→   290→      if (containerId === "routePreviewMap" && state.maps[containerId]) {
+   291→   291→        state.maps[containerId].invalidateSize();
+   292→   292→      }
+   293→   293→    }, 120);
+   294→   294→  }
+   295→   295→
+   296→   296→  function zoomVehicle(vehicleId) {
+   297→   297→    const vehicle = state.vehicles.find(item => item.vehicle_id === vehicleId);
+   298→   298→    if (!vehicle || !isMapCoordinate(vehicle)) return;
+   299→   299→    state.selectedVehicleId = vehicleId;
+   300→   300→    state.selectedRoute = vehicle.route;
+   301→   301→    
+   302→   302→    if (state.maps.mobileMap) {
+   303→   303→      if (typeof activateMobileTab === "function") activateMobileTab("mapTab");
+   304→   304→      drawMap("mobileMap", vehicle.route);
+   305→   305→      const map = state.maps.mobileMap;
+   306→   306→      if (map) {
+   307→   307→        setTimeout(() => map.setView([Number(vehicle.latitude), Number(vehicle.longitude)], 17), 100);
+   308→   308→      }
+   309→   309→    } else if (state.maps.operatorMap) {
+   310→   310→      if (typeof activateOperatorTab === "function") activateOperatorTab("opsOverview");
+   311→   311→      const map = state.maps.operatorMap;
+   312→   312→      if (map) {
+   313→   313→        setTimeout(() => map.setView([Number(vehicle.latitude), Number(vehicle.longitude)], 17), 100);
+   314→   314→      }
+   315→   315→    }
+   316→   316→  }
+   317→   317→
+   318→   318→  function addMapControls(containerId, map, tileLayers, defaultName) {
+   319→   319→    if (typeof L === "undefined") return;
+   320→   320→    const isOperator = containerId === "operatorMap";
+   321→   321→    const controlPos = isOperator ? "topright" : "bottomright";
+   322→   322→    const control = L.control({ position: controlPos });
+   323→   323→    control.onAdd = function () {
+   324→   324→      const wrap = L.DomUtil.create("div", "map-controls-bar");
+   325→   325→      L.DomEvent.disableClickPropagation(wrap);
+   326→   326→      L.DomEvent.disableScrollPropagation(wrap);
+   327→   327→
+   328→   328→      // --- Layer Settings Bottom Sheet ---
+   329→   329→      const mapContainer = map.getContainer();
+   330→   330→      const sheetWrap = L.DomUtil.create("div", "map-settings-sheet-wrap", mapContainer);
+   331→   331→      const backdrop = L.DomUtil.create("div", "map-settings-backdrop", sheetWrap);
+   332→   332→      const sheet = L.DomUtil.create("div", "map-settings-sheet", sheetWrap);
+   333→   333→
+   334→   334→      const sheetHeader = L.DomUtil.create("div", "map-settings-header", sheet);
+   335→   335→      sheetHeader.innerHTML = `<h3>Map Details</h3><button type="button" class="close-sheet" aria-label="Close Map Details"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg></button>`;
+   336→   336→      
+   337→   337→      const grid = L.DomUtil.create("div", "map-settings-grid", sheet);
+   338→   338→      const layerOrder = ['Standard', 'Light', 'Dark', 'Transport', 'Cycle'];
+   339→   339→      
+   340→   340→      layerOrder.forEach(name => {
+   341→   341→        const item = L.DomUtil.create("button", "map-type-card", grid);
+   342→   342→        item.type = "button";
+   343→   343→        item.innerHTML = `<div class="map-type-preview map-type-${name.toLowerCase()}"></div><div class="map-type-name">${name}</div>`;
+   344→   344→        if (name === defaultName) item.classList.add("active");
+   345→   345→        
+   346→   346→        L.DomEvent.on(item, "click", (e) => {
+   347→   347→          e.stopPropagation();
+   348→   348→          Array.from(grid.children).forEach(child => child.classList.remove("active"));
+   349→   349→          item.classList.add("active");
+   350→   350→          closeSheet();
+   351→   351→          
+   352→   352→          const current = state.mapActiveTile[containerId];
+   353→   353→          if (current) map.removeLayer(current);
+   354→   354→          const next = tileLayers[name];
+   355→   355→          next.addTo(map);
+   356→   356→          const featureLayer = state.mapLayers[containerId];
+   357→   357→          const clusterLayer = state.mapClusters[containerId];
+   358→   358→          if (featureLayer && featureLayer.bringToFront) featureLayer.bringToFront();
+   359→   359→          if (clusterLayer && clusterLayer.bringToFront) clusterLayer.bringToFront();
+   360→   360→          state.mapActiveTile[containerId] = next;
+   361→   361→        });
+   362→   362→      });
+   363→   363→
+   364→   364→      const openSheet = () => {
+   365→   365→        backdrop.classList.add("open");
+   366→   366→        sheet.classList.add("open");
+   367→   367→      };
+   368→   368→      const closeSheet = () => {
+   369→   369→        backdrop.classList.remove("open");
+   370→   370→        sheet.classList.remove("open");
+   371→   371→      };
+   372→   372→      L.DomEvent.on(backdrop, "click", closeSheet);
+   373→   373→      L.DomEvent.on(sheetHeader.querySelector(".close-sheet"), "click", closeSheet);
+   374→   374→
+   375→   375→
+   376→   376→
+   377→   377→      // --- Choose on Map (Pin Destination) Button ---
+   378→   378→      if (containerId === "mobileMap") {
+   379→   379→        const pinBtn = L.DomUtil.create("button", "map-fab pin-dest-btn", wrap);
+   380→   380→        pinBtn.type = "button";
+   381→   381→        pinBtn.title = "Choose destination on map";
+   382→   382→        pinBtn.setAttribute("aria-label", "Choose destination on map");
+   383→   383→        pinBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(0.9)"><path d="M22 2 11 13"></path><path d="m22 2-7 20-4-9-9-4 20-7z"></path></svg>`;
+   384→   384→        
+   385→   385→        L.DomEvent.on(pinBtn, "click", (e) => {
+   386→   386→          e.stopPropagation();
+   387→   387→          if (typeof window.togglePinMode === 'function') {
+   388→   388→            window.togglePinMode(containerId, map);
+   389→   389→          }
+   390→   390→        });
+   391→   391→      }
+   392→   392→
+   393→   393→
+   394→   394→      const toggle = L.DomUtil.create("button", "map-fab", wrap);
+   395→   395→      toggle.type = "button";
+   396→   396→      toggle.title = "Map Settings";
+   397→   397→      toggle.setAttribute("aria-label", "Map Settings");
+   398→   398→      toggle.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(0.9)"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 12 12 17 22 12"/><polyline points="2 17 12 22 22 17"/></svg>`;
+   399→   399→      
+   400→   400→      L.DomEvent.on(toggle, "click", (e) => {
+   401→   401→        e.stopPropagation();
+   402→   402→        openSheet();
+   403→   403→      });
+   404→   404→
+   405→   405→
+   406→   406→      // --- Locate Me / Fit Fleet Button ---
+   407→   407→      const locBtn = L.DomUtil.create("button", "map-fab", wrap);
+   408→   408→      locBtn.type = "button";
+   409→   409→      if (isOperator) {
+   410→   410→        locBtn.title = "Center map on fleet";
+   411→   411→        locBtn.setAttribute("aria-label", "Center map on fleet");
+   412→   412→        locBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(0.9)"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>`;
+   413→   413→      } else {
+   414→   414→        locBtn.title = "Show my location";
+   415→   415→        locBtn.setAttribute("aria-label", "Show my location");
+   416→   416→        locBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="transform: scale(0.9)"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>`;
+   417→   417→      }
+   418→   418→      L.DomEvent.on(locBtn, "click", () => {
+   419→   419→        if (isOperator) {
+   420→   420→          fitFleet(containerId);
+   421→   421→        } else {
+   422→   422→          locBtn.classList.add("map-fab--loading");
+   423→   423→          if (state.lastPosition) {
+   424→   424→            map.setView([state.lastPosition.latitude, state.lastPosition.longitude], 16);
+   425→   425→            locBtn.classList.remove("map-fab--loading");
+   426→   426→          } else if (navigator.geolocation) {
+   427→   427→            navigator.geolocation.getCurrentPosition(
+   428→   428→              (pos) => {
+   429→   429→                map.setView([pos.coords.latitude, pos.coords.longitude], 16);
+   430→   430→                locBtn.classList.remove("map-fab--loading");
+   431→   431→              },
+   432→   432→              () => { locBtn.classList.remove("map-fab--loading"); }
+   433→   433→            );
+   434→   434→          } else {
+   435→   435→            locBtn.classList.remove("map-fab--loading");
+   436→   436→          }
+   437→   437→        }
+   438→   438→      });
+   439→   439→      return wrap;
+   440→   440→    };
+   441→   441→    control.addTo(map);
+   442→   442→
+   443→   443→    if (containerId === "mobileMap") {
+   444→   444→       map.on('movestart', () => {
+   445→   445→         if (document.body.classList.contains("pin-selection-mode")) {
+   446→   446→           const overlay = document.getElementById("centerPinOverlay");
+   447→   447→           if (overlay) overlay.classList.add("is-dragging");
+   448→   448→         }
+   449→   449→       });
+   450→   450→       map.on('moveend', () => {
+   451→   451→         if (document.body.classList.contains("pin-selection-mode")) {
+   452→   452→           const overlay = document.getElementById("centerPinOverlay");
+   453→   453→           if (overlay) overlay.classList.remove("is-dragging");
+   454→   454→         }
+   455→   455→       });
+   456→   456→    }
+   457→   457→
+   458→   458→    // Start geolocation watch for non-operator maps
+   459→   459→    if (!isOperator && navigator.geolocation) {
+   460→   460→      startLocationWatch(containerId, map);
+   461→   461→    }
+   462→   462→  }
+   463→   463→
+   464→   464→  function startLocationWatch(containerId, map) {
+   465→   465→    // Avoid duplicate watches for the same map
+   466→   466→    if (state.geoWatches && state.geoWatches[containerId]) return;
+   467→   467→    if (!state.geoWatches) state.geoWatches = {};
+   468→   468→    let locationMarker = null;
+   469→   469→    let accuracyCircle = null;
+   470→   470→    state.geoWatches[containerId] = navigator.geolocation.watchPosition(
+   471→   471→      (pos) => {
+   472→   472→        const lat = pos.coords.latitude;
+   473→   473→        const lon = pos.coords.longitude;
+   474→   474→        const acc = pos.coords.accuracy;
+   475→   475→        // Update shared state
+   476→   476→        state.lastPosition = { latitude: lat, longitude: lon };
+   477→   477→        // Draw / update marker and accuracy circle
+   478→   478→        if (!locationMarker) {
+   479→   479→          accuracyCircle = L.circle([lat, lon], {
+   480→   480→            radius: acc,
+   481→   481→            color: '#1a73e8',
+   482→   482→            fillColor: '#1a73e8',
+   483→   483→            fillOpacity: 0.08,
+   484→   484→            weight: 1.5,
+   485→   485→            opacity: 0.4,
+   486→   486→          }).addTo(map);
+   487→   487→          locationMarker = L.marker([lat, lon], {
+   488→   488→            icon: L.divIcon({
+   489→   489→              className: 'my-location-icon',
+   490→   490→              html: '<span></span>',
+   491→   491→              iconSize: [18, 18],
+   492→   492→              iconAnchor: [9, 9],
+   493→   493→            }),
+   494→   494→            zIndexOffset: 1000,
+   495→   495→          }).bindTooltip('My location', { direction: 'top', offset: [0, -6] }).addTo(map);
+   496→   496→        } else {
+   497→   497→          locationMarker.setLatLng([lat, lon]);
+   498→   498→          accuracyCircle.setLatLng([lat, lon]).setRadius(acc);
+   499→   499→        }
+   500→   500→      },
+   501→   501→      null,
+   502→   502→      { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 }
+   503→   503→    );
+   504→   504→  }
+   505→   505→
+   506→   506→  function drawDestinationLayer(containerId, layerGroup) {
+   507→   507→    if (containerId !== "mobileMap" || typeof L === "undefined" || !state.selectedDestination) return;
+   508→   508→    const destination = [state.selectedDestination.latitude, state.selectedDestination.longitude];
+   509→   509→    L.marker(destination, {
+   510→   510→      icon: L.divIcon({ className: "destination-marker", html: "<span></span>", iconSize: [24, 24], iconAnchor: [12, 22] }),
+   511→   511→    }).bindTooltip("Destination").addTo(layerGroup);
+   512→   512→    const best = state.vehicles.filter(v => v.route === state.selectedRoute && Number(v.latitude) && Number(v.longitude)).sort(vehicleSort)[0];
+   513→   513→    if (best) {
+   514→   514→      L.polyline([[Number(best.latitude), Number(best.longitude)], destination], { color: "#0f766e", weight: 4, dashArray: "8 8", opacity: 0.8 }).addTo(layerGroup);
+   515→   515→    }
+   516→   516→  }
+   517→   517→
+   518→   518→  function showVehicleDetailsModal(vehicleId) {
+   519→   519→    const vehicle = state.vehicles.find(item => item.vehicle_id === vehicleId);
+   520→   520→    if (!vehicle) return;
+   521→   521→    const route = state.routes.find(item => item.route === vehicle.route);
+   522→   522→    const routeAlerts = state.incidents.filter(incident => incident.vehicle_id === vehicleId);
+   523→   523→    const activeAlerts = state.alerts.filter(alert => alert.vehicle_id === vehicleId);
+   524→   524→    const details = `
+   525→   525→      <div class="vehicle-detail-modal">
+   526→   526→        <div class="vehicle-detail-grid">
+   527→   527→          <div><span>Route</span><strong>${escapeHtml(vehicle.route)}</strong></div>
+   528→   528→          <div><span>Direction</span><strong>${escapeHtml(vehicle.direction || "unknown")}</strong></div>
+   529→   529→          <div><span>ETA</span><strong>${escapeHtml(String(vehicle.eta_minutes ?? "--"))} min</strong></div>
+   530→   530→          <div><span>Load</span><strong>${escapeHtml(String(vehicle.occupancy))}/${escapeHtml(String(vehicle.capacity))}</strong></div>
+   531→   531→          <div><span>Status</span><strong>${escapeHtml(vehicle.status || "active")}</strong></div>
+   532→   532→          <div><span>Safety</span><strong>${escapeHtml(vehicle.route_deviation?.anomaly ? "Verify route" : "On route")}</strong></div>
+   533→   533→        </div>
+   534→   534→        <section class="vehicle-history-section">
+   535→   535→          <h3>Route details</h3>
+   536→   536→          <p>${escapeHtml(route?.name || route?.description || "No route metadata available.")}</p>
+   537→   537→          <p class="muted">${escapeHtml(route?.origin_name || "Origin")} to ${escapeHtml(route?.destination_name || "Destination")}</p>
+   538→   538→        </section>
+   539→   539→        <section class="vehicle-history-section">
+   540→   540→          <h3>Verified alerts</h3>
+   541→   541→          ${activeAlerts.length ? activeAlerts.map(alert => `<article><strong>${escapeHtml(alert.severity)}</strong><p>${escapeHtml(alert.message)}</p><small>${escapeHtml(alert.verification_status || "open")}</small></article>`).join("") : `<p class="empty-copy">No verified alerts for this PUV.</p>`}
+   542→   542→        </section>
+   543→   543→        <section class="vehicle-history-section">
+   544→   544→          <h3>User reports</h3>
+   545→   545→          ${routeAlerts.length ? routeAlerts.slice(0, 4).map(incident => `<article><strong>${escapeHtml(incident.severity)}</strong><p>${escapeHtml(incident.message)}</p><small>${escapeHtml(incident.verification_status || "open")}</small></article>`).join("") : `<p class="empty-copy">No user incidents reported yet.</p>`}
+   546→   546→        </section>
+   547→   547→      </div>
+   548→   548→    `;
+   549→   549→    openModal({
+   550→   550→      title: `${vehicle.vehicle_id} details`,
+   551→   551→      bodyHtml: details,
+   552→   552→      actions: [],
+   553→   553→    });
+   554→   554→  }
+   555→   555→
+   556→   556→  function reportVehicleIncidentModal(vehicleId, routeId) {
+   557→   557→    const categories = ["Safety", "Route deviation", "Crowding", "Delay", "Driver conduct", "Other"];
+   558→   558→    openModal({
+   559→   559→      title: `Report incident for ${vehicleId}`,
+   560→   560→      bodyHtml: `
+   561→   561→        <form class="incident-report-form">
+   562→   562→          <div class="incident-context-grid">
+   563→   563→            <div><span>Vehicle</span><strong>${escapeHtml(vehicleId)}</strong></div>
+   564→   564→            <div><span>Route</span><strong>${escapeHtml(routeId)}</strong></div>
+   565→   565→          </div>
+   566→   566→          <label><span>Category</span><select id="incidentCategory">${categories.map(category => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join("")}</select></label>
+   567→   567→          <label><span>Severity</span><select id="incidentSeverity"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select></label>
+   568→   568→          <label><span>Explanation</span><textarea id="incidentExplanation" rows="4" placeholder="Describe what happened, where it happened, and whether passengers are affected."></textarea></label>
+   569→   569→        </form>
+   570→   570→      `,
+   571→   571→      actions: [
+   572→   572→        {
+   573→   573→          id: "submit",
+   574→   574→          label: "Submit report",
+   575→   575→          className: "primary",
+   576→   576→          onClick: ({ overlay, close }) => {
+   577→   577→            const category = overlay.querySelector("#incidentCategory")?.value || "Other";
+   578→   578→            const severity = overlay.querySelector("#incidentSeverity")?.value || "medium";
+   579→   579→            const explanation = overlay.querySelector("#incidentExplanation")?.value.trim() || "";
+   580→   580→            if (!explanation) {
+   581→   581→              if (typeof showToast === "function") showToast("Add a short incident explanation.");
+   582→   582→              return;
+   583→   583→            }
+   584→   584→            if (typeof createAlert === "function") {
+   585→   585→              createAlert(vehicleId, routeId, { category, severity, explanation, source: "user_reported" });
+   586→   586→            }
+   587→   587→            close();
+   588→   588→          },
+   589→   589→        },
+   590→   590→        { id: "cancel", label: "Cancel", className: "secondary", onClick: ({ close }) => close() },
+   591→   591→      ],
+   592→   592→    });
+   593→   593→  }
+   594→   594→
+   595→   595→  function renderVehicleCard(vehicle) {
+   596→   596→    return `
+   597→   597→      <article class="vehicle-card">
+   598→   598→        <div>
+   599→   599→          <h4>Route ${escapeHtml(vehicle.route)} <span style="font-size: 14px; font-weight: 600; color: var(--muted);">${escapeHtml(vehicle.vehicle_id)}</span></h4>
+   600→   600→          <p style="margin-bottom: 12px;">${escapeHtml(routeName(vehicle.route))}</p>
+   601→   601→          
+   602→   602→          <ul class="route-stops-timeline" style="margin-bottom: 16px; margin-left: 4px;">
+   603→   603→            <li><span class="stop-dot" style="background: var(--teal); border-color: var(--teal);"></span>Board: <strong>Stop ${Number(vehicle.next_stop_id ?? 0) + 1}</strong></li>
+   604→   604→            <li><span class="stop-dot" style="background: var(--destructive, #ef4444); border-color: var(--destructive, #ef4444);"></span>Alight: <strong>Select destination</strong></li>
+   605→   605→          </ul>
+   606→   606→
+   607→   607→          <div class="trip-detail-grid">
+   608→   608→            <div style="color: var(--muted);">ETA to you:</div> <div><strong>${escapeHtml(vehicle.eta_minutes ?? "--")} min</strong></div>
+   609→   609→          </div>
+   610→   610→        </div>
+   611→   611→        <div class="vehicle-card-actions">
+   612→   612→          <span class="occupancy-pill ${tierClass(vehicle.tier)}">${tierLabel(vehicle.tier)}</span>
+   613→   613→          <button class="mini-action zoom-btn" data-zoom-vehicle="${escapeHtml(vehicle.vehicle_id)}" title="Zoom on Map" aria-label="Zoom on Map">
+   614→   614→            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line><line x1="11" y1="8" x2="11" y2="14"></line><line x1="8" y1="11" x2="14" y2="11"></line></svg>
+   615→   615→          </button>
+   616→   616→        </div>
+   617→   617→      </article>
+   618→   618→    `;
+   619→   619→  }
+   620→   620→
+   621→   621→
