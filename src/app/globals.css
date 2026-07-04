@@ -3,107 +3,59 @@
 
 @custom-variant dark (&:is(.dark *));
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --color-sidebar-ring: var(--sidebar-ring);
-  --color-sidebar-border: var(--sidebar-border);
-  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
-  --color-sidebar-accent: var(--sidebar-accent);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-foreground: var(--sidebar-foreground);
-  --color-sidebar: var(--sidebar);
-  --color-chart-5: var(--chart-5);
-  --color-chart-4: var(--chart-4);
-  --color-chart-3: var(--chart-3);
-  --color-chart-2: var(--chart-2);
-  --color-chart-1: var(--chart-1);
-  --color-ring: var(--ring);
-  --color-input: var(--input);
-  --color-border: var(--border);
-  --color-destructive: var(--destructive);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-accent: var(--accent);
-  --color-muted-foreground: var(--muted-foreground);
-  --color-muted: var(--muted);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-secondary: var(--secondary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-primary: var(--primary);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-popover: var(--popover);
-  --color-card-foreground: var(--card-foreground);
-  --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+/* ── Old LoadSense CSS variables — in @theme so Tailwind preserves them ── */
+@theme {
+  --color-teal: #087b68;
+  --color-teal-dark: #045c51;
+  --color-mint: #dff6ee;
+  --color-ink: #172027;
+  --color-wash: #f3f7f6;
+  --color-panel: #ffffff;
+  --color-line: #d9e4e7;
+  --color-muted: #4f616b;
+  --color-shadow: 0 18px 60px rgba(24, 37, 45, 0.16);
 }
 
+/* Also define as plain CSS vars (for the old CSS files that use var(--teal) etc.) */
 :root {
-  --radius: 0.5rem;
-  --background: #ffffff;
-  --foreground: #172027;
-  --card: #ffffff;
-  --card-foreground: #172027;
-  --popover: #ffffff;
-  --popover-foreground: #172027;
-  --primary: #087b68;
-  --primary-foreground: #ffffff;
-  --secondary: #e8f1ef;
-  --secondary-foreground: #045c51;
-  --muted: #f3f7f6;
-  --muted-foreground: #4f616b;
-  --accent: #dff6ee;
-  --accent-foreground: #045c51;
-  --destructive: #c93b31;
-  --border: #d9e4e7;
-  --input: #d9e4e7;
-  --ring: #087b68;
+  --teal: #087b68;
+  --teal-dark: #045c51;
+  --mint: #dff6ee;
+  --ink: #172027;
+  --wash: #f3f7f6;
+  --panel: #ffffff;
+  --line: #d9e4e7;
+  --muted: #4f616b;
+  --shadow: 0 18px 60px rgba(24, 37, 45, 0.16);
+  --blue: #1a73e8;
+  --amber: #8f5308;
+  --red: #c93b31;
+  --violet: #5b4bb2;
 }
 
 .dark {
-  --background: #0a0f14;
-  --foreground: #e2e8f0;
-  --card: #0f172a;
-  --card-foreground: #e2e8f0;
-  --popover: #0f172a;
-  --popover-foreground: #e2e8f0;
-  --primary: #087b68;
-  --primary-foreground: #ffffff;
-  --secondary: #1a2a26;
-  --secondary-foreground: #dff6ee;
-  --muted: #1a2020;
-  --muted-foreground: #94a3b8;
-  --accent: #0d2823;
-  --accent-foreground: #dff6ee;
-  --destructive: #dc2626;
-  --border: #1e293b;
-  --input: #1e293b;
-  --ring: #087b68;
+  --wash: #0a0f14;
+  --panel: #0f172a;
+  --ink: #e2e8f0;
+  --mint: #0d2823;
+  --line: #1e293b;
+  --muted: #94a3b8;
 }
 
-/* Import the old LoadSense CSS directly */
-@import "./css/variables.css";
+/* ── Old LoadSense CSS files (imported directly) ── */
 @import "./css/base.css";
 @import "./css/components.css";
 @import "./css/mobile.css";
 @import "./css/map.css";
 
-/* Leaflet container needs explicit height */
+/* ── Leaflet ── */
 .leaflet-container {
   height: 100%;
   width: 100%;
   background: #f0f0f0;
 }
 
-/* Tier blink animation */
+/* Tier blink */
 @keyframes blink {
-  50% {
-    filter: brightness(1.18);
-    box-shadow: 0 0 0 3px rgba(201, 59, 49, 0.22);
-  }
+  50% { filter: brightness(1.18); box-shadow: 0 0 0 3px rgba(201, 59, 49, 0.22); }
 }
