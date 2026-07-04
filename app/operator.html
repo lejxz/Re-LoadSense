@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoadSense Operator</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/map.css" />
+    <link rel="stylesheet" href="css/operator.css" />
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+    <link rel="stylesheet" href="vendor/leaflet/MarkerCluster.css" />
+    <link rel="stylesheet" href="vendor/leaflet/MarkerCluster.Default.css" />
+  </head>
+  <body class="operator-page">
+    <header class="operator-header">
+      <div>
+        <p class="eyebrow">LoadSense Operator</p>
+        <h1>Fleet operations console</h1>
+      </div>
+      <div class="operator-actions">
+        <div id="operatorCountrySelect" class="country-search-wrapper"></div>
+        <a class="button secondary" href="mobile.html">Commuter App</a>
+        <button id="refreshOperator" class="button primary">Refresh</button>
+      </div>
+    </header>
+
+    <main class="operator-shell">
+      <nav class="ops-tabs" aria-label="Operator dashboard tabs">
+        <button class="active" data-ops-tab="opsOverview">Overview</button>
+        <button data-ops-tab="opsFleet">Fleet</button>
+        <button data-ops-tab="opsRoutes">Routes</button>
+        <button data-ops-tab="opsDemand">Demand</button>
+        <button data-ops-tab="opsAlerts">Alerts</button>
+        <button data-ops-tab="opsData">Database</button>
+      </nav>
+
+      <section class="ops-metrics">
+        <article>
+          <span>Reporting vehicles</span>
+          <strong id="opVehicleCount">0</strong>
+        </article>
+        <article>
+          <span>Active alerts</span>
+          <strong id="opAlertCount">0</strong>
+        </article>
+        <article>
+          <span>Average load</span>
+          <strong id="opAvgLoad">0</strong>
+        </article>
+        <article>
+          <span>Overloaded</span>
+          <strong id="opOverloaded">0</strong>
+        </article>
+      </section>
+
+      <section id="opsOverview" class="ops-tab-panel active">
+      <section class="ops-map-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Network view</p>
+            <h2>Live PUV map</h2>
+          </div>
+        </div>
+        <div id="operatorMap" class="live-map wide-map">
+        </div>
+      </section>
+      </section>
+
+      <section id="opsRoutes" class="ops-tab-panel">
+      <section class="ops-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Route database</p>
+            <h2>Manage routes</h2>
+          </div>
+        </div>
+        <div id="routesAdmin" class="routes-admin">
+          <div class="mb-16">
+            <button id="addRouteBtn" class="button primary small" type="button">Add Route</button>
+          </div>
+          <div class="route-io-actions">
+            <button id="exportRoutes" class="button secondary">Export routes (JSON)</button>
+            <button id="importRoutesBtn" class="button secondary">Import routes (JSON)</button>
+          </div>
+          <div class="file-import-panel">
+            <label>
+              Route file upload
+              <input id="routeFile" type="file" accept=".geojson,.json,.csv,.zip" />
+            </label>
+            <div class="import-actions">
+              <button id="previewRouteFile" class="button secondary" type="button">Preview file</button>
+              <button id="commitRouteFile" class="button primary" type="button">Commit file</button>
+            </div>
+            <label class="checkbox-row">
+              <input id="replaceRoutes" type="checkbox" />
+              Replace matching route IDs
+            </label>
+            <div id="routeImportPreview" class="import-preview"></div>
+          </div>
+          <textarea id="importRoutes" class="import-routes-textarea" placeholder='Paste JSON array of routes here (route,name,polyline)'></textarea>
+
+          <div class="routes-admin-search">
+            <input id="adminRouteSearch" class="flex-8 m-0" placeholder="Search routes by name or ID…" />
+            <select id="regionFilter" class="flex-2 m-0"></select>
+          </div>
+          <div id="routesTable" class="routes-table"></div>
+        </div>
+      </section>
+      </section>
+
+      <section id="opsFleet" class="ops-tab-panel">
+      <section class="ops-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Dispatch queue</p>
+            <h2>Fleet status</h2>
+          </div>
+          <button id="addVehicleBtn" class="button primary small">Add Vehicle</button>
+        </div>
+        <div class="ops-toolbar">
+          <input id="fleetSearch" placeholder="Search vehicle, route, city" />
+          <select id="fleetRouteFilter"></select>
+          <select id="fleetTierFilter">
+            <option value="all">All load states</option>
+            <option value="green">Seats available</option>
+            <option value="yellow">Standing only</option>
+            <option value="red">At capacity</option>
+            <option value="blinking_red">Overloaded</option>
+          </select>
+        </div>
+        <div id="operatorFleet" class="fleet-table"></div>
+      </section>
+      </section>
+
+      <section id="opsDemand" class="ops-tab-panel">
+      <section class="ops-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Model output</p>
+            <h2>Demand forecast</h2>
+          </div>
+        </div>
+        <div id="forecastSummary" class="forecast-summary"></div>
+        <div id="dispatchAdvice" class="dispatch-advice"></div>
+        <div id="forecastBars" class="forecast-bars"></div>
+        <p id="forecastMeta" class="muted"></p>
+      </section>
+      </section>
+
+      <section id="opsAlerts" class="ops-tab-panel">
+      <section class="ops-panel alerts-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Operator-first verification</p>
+            <h2>Safety and route alerts</h2>
+          </div>
+        </div>
+        <div id="operatorAlerts" class="alert-list"></div>
+      </section>
+      </section>
+
+      <section id="opsData" class="ops-tab-panel">
+      <section class="ops-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Cloud database</p>
+            <h2>Persisted demo records</h2>
+          </div>
+          <div class="section-actions">
+            <button id="resetDatabaseBtn" class="button secondary small" disabled>Reset demo data</button>
+            <button id="resetAlertsBtn" class="button secondary small">Reset alerts data and alert simulation</button>
+            <button id="resetDemandBtn" class="button secondary small">Reset Demand Forecasting and data</button>
+          </div>
+        </div>
+        <div id="databaseStatus" class="db-grid"></div>
+      </section>
+
+      <section class="ops-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Historical incident flagging</p>
+            <h2>Incident log</h2>
+          </div>
+        </div>
+        <div id="incidentLog" class="incident-list"></div>
+      </section>
+      </section>
+
+      <div id="routeModal" class="modal hidden">
+        <div class="modal-content route-modal-content">
+          <div class="modal-header">
+            <h2 id="routeModalTitle">Add Route</h2>
+            <button id="closeRouteModal" class="button clear">&times;</button>
+          </div>
+          <div class="modal-body" id="routeModalBody">
+            <form id="routeForm" class="route-form">
+              <div class="route-name-builder">
+                <label>
+                  Tag
+                  <input id="routeId" required placeholder="e.g. 44A" />
+                </label>
+                <span class="route-name-separator">|</span>
+                <label>
+                  Type
+                  <select id="routeType" required></select>
+                </label>
+                <span class="route-name-separator">:</span>
+                <label>
+                  Origin Name
+                  <input id="routeOrigin" required placeholder="e.g. Naga" />
+                </label>
+                <span class="route-name-arrow">→</span>
+                <label>
+                  Destination Name
+                  <input id="routeDestination" required placeholder="e.g. Punta Princesa" />
+                </label>
+              </div>
+              
+              <div class="route-meta-builder">
+                <label>
+                  Region
+                  <input id="routeRegion" placeholder="e.g. Central Visayas" required />
+                </label>
+                <label>
+                  Distance (km)
+                  <input id="routeDistance" type="number" step="0.1" placeholder="e.g. 15.5" />
+                </label>
+                <label>
+                  Min. Fare
+                  <input id="routeMinimumFare" type="number" step="0.5" placeholder="e.g. 13.00" />
+                </label>
+                <label>
+                  Fare/km
+                  <input id="routeFarePerKm" type="number" step="0.5" placeholder="e.g. 2.50" />
+                </label>
+                <label>
+                  Description
+                  <input id="routeDescription" placeholder="e.g. Cebu City Via Escalante, Tabuelan" />
+                </label>
+              </div>
+              
+              <div class="route-builder-header">
+                <h3>
+                  Coordinates
+                  <span id="loopBadge" class="loop-badge">Loop Route</span>
+                </h3>
+                <button id="hintButton" type="button" class="button secondary small">Hint</button>
+              </div>
+              
+              <div id="routeHint" class="route-hint">
+                <strong>How to build a route:</strong>
+                <ul>
+                  <li>The route path connects each coordinate you add point-by-point.</li>
+                  <li>Set the Point Type: <strong>Origin</strong>, <strong>Waypoint</strong> (direction change), <strong>Road Segment</strong> (road continuation), <strong>Alight or Board Stop</strong>, or <strong>Destination</strong>.</li>
+                  <li>There can only be one Origin and one Destination.</li>
+                  <li>If the Destination coordinates match the Origin, it is marked as a loop.</li>
+                  <li>Waypoints, Road Segments, and Stops are automatically numbered sequentially.</li>
+                </ul>
+              </div>
+
+              <div id="routePointsContainer" class="route-points-container">
+                <!-- Point rows injected via JS -->
+              </div>
+              <div id="routeFormErrors" class="route-form-errors hidden"></div>
+              
+              <div class="route-form-actions">
+                <button id="addRoutePoint" class="button secondary" type="button">+ Add Coordinate</button>
+              </div>
+
+              <div class="route-form-actions route-form-actions-footer">
+                <button id="previewRoute" class="button secondary" type="button">Preview on Map</button>
+                <button id="saveRoute" class="button primary" type="button">Save route</button>
+                <button id="clearRoute" class="button secondary" type="button">Clear</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div id="vehicleModal" class="modal hidden">
+        <div class="modal-content vehicle-modal-content">
+          <div class="modal-header">
+            <h2 id="vehicleModalTitle">Add Vehicle</h2>
+            <button id="closeVehicleModal" class="button clear">&times;</button>
+          </div>
+          <div class="modal-body">
+            <form id="vehicleForm" class="route-form">
+              <label>
+                Vehicle ID (Plate Number)
+                <input id="vehId" required placeholder="ABC-1234" />
+              </label>
+              <label>
+                Brand
+                <input id="vehBrand" required placeholder="e.g. Toyota" />
+              </label>
+              <label>
+                Model
+                <input id="vehModel" required placeholder="e.g. HiAce" />
+              </label>
+              <label>
+                Vehicle Type
+                <select id="vehType" required></select>
+              </label>
+              <label>
+                Registration No.
+                <input id="vehRegistration" required placeholder="LTFRB / franchise registration" />
+              </label>
+              <label>
+                Year
+                <input id="vehYear" type="number" min="1980" max="2035" placeholder="e.g. 2022" />
+              </label>
+              <label>
+                Region
+                <select id="vehRegion" required></select>
+              </label>
+              <label>
+                Route
+                <select id="vehRoute" required></select>
+              </label>
+              <label>
+                Driver
+                <input id="vehDriver" required placeholder="Driver Name" />
+              </label>
+              <label>
+                Max Occupancy
+                <input id="vehMaxOccupancy" type="number" required placeholder="e.g. 20" />
+              </label>
+              <div class="route-form-actions mt-16">
+                <button type="submit" class="button primary">Save Vehicle</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div id="routePreviewModal" class="modal hidden">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h2 id="routePreviewTitle">Selected Route</h2>
+            <button id="closeRoutePreviewModal" class="button clear">&times;</button>
+          </div>
+          <div class="modal-body">
+            <div id="routePreviewMap" class="live-map route-preview-map"></div>
+            <p id="routePreviewMeta" class="muted mt-12"></p>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script src="vendor/leaflet/leaflet.js"></script>
+    <script src="vendor/leaflet/leaflet.markercluster.js"></script>
+    <script src="js/core.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/places.js"></script>
+    <script src="js/operator.js"></script>
+    <script src="js/routes-admin.js"></script>
+    <script src="js/alerts.js"></script>
+    <script src="js/main.js"></script>
+    <script>
+      window.LoadSense?.initOperator?.();
+    </script>
+  </body>
+</html>

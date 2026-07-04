@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LoadSense Commuter</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=Sora:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="css/variables.css" />
+    <link rel="stylesheet" href="css/base.css" />
+    <link rel="stylesheet" href="css/components.css" />
+    <link rel="stylesheet" href="css/map.css" />
+    <link rel="stylesheet" href="css/mobile.css" />
+    <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+    <link rel="stylesheet" href="vendor/leaflet/MarkerCluster.css" />
+    <link rel="stylesheet" href="vendor/leaflet/MarkerCluster.Default.css" />
+  </head>
+  <body class="mobile-page">
+    <main class="phone-frame" aria-label="LoadSense commuter mobile app">
+      <section id="loginScreen" class="login-screen">
+        <div class="phone-status"><span>9:41</span><span>LTE 88%</span></div>
+        <div class="login-brand">
+          <span class="app-logo"></span>
+          <p class="eyebrow">LoadSense Mobile</p>
+          <h1>Know before you board.</h1>
+          <p>Live PUV occupancy, ETA, route safety, and AI boarding guidance.</p>
+        </div>
+        <form id="loginForm" class="login-form">
+          <label>
+            Mobile number
+            <input id="mobileNumber" autocomplete="tel" inputmode="tel" value="0917 000 2026" />
+          </label>
+          <button class="button primary" type="submit">Sign in for demo</button>
+        </form>
+      </section>
+
+      <section id="appScreen" class="app-screen hidden">
+        <header class="mobile-header">
+          <div class="header-greeting">
+            <span class="greeting-text">Good day,</span>
+            <span class="brand-name">LoadSense</span>
+          </div>
+          <div id="mobileCountrySelect" class="country-search-wrapper"></div>
+        </header>
+
+        <section id="tripSearchPanel" class="trip-search-panel" aria-label="Find a PUV">
+          <div class="transit-pill">
+            <div class="transit-timeline">
+              <div class="dot origin-dot"></div>
+              <div class="line"></div>
+              <div class="dot dest-dot"></div>
+            </div>
+            <div class="transit-inputs">
+              <div class="input-row">
+                <input id="originInput" autocomplete="off" value="" placeholder="Origin" />
+              </div>
+              <div class="input-divider"></div>
+              <div class="input-row">
+                <input id="destinationInput" autocomplete="off" placeholder="Where to?" />
+              </div>
+            </div>
+            <button id="swapTrip" class="swap-trip-btn" type="button" aria-label="Swap origin and destination" title="Swap origin and destination">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 16V4M7 4L3 8M7 4L11 8M17 8V20M17 20L21 16M17 20L13 16"/></svg>
+            </button>
+            <div id="originSearchResults" class="place-search-results hidden"></div>
+            <div id="destinationSearchResults" class="place-search-results hidden"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel active" id="homeTab">
+          <div class="hero-card">
+            <p class="eyebrow">Best boarding option</p>
+            <div class="home-top">
+              <h2 id="bestVehicleTitle">Waiting for telemetry</h2>
+            </div>
+            <div id="bestVehicleBody" class="best-vehicle-details">
+              <p>Live demo vehicles are simulated by the Python backend and loop through Cebu routes.</p>
+            </div>
+            <div id="ledPill" class="occupancy-pill neutral">No LED signal</div>
+          </div>
+          <div class="quick-grid">
+            <article>
+              <span style="display: flex; align-items: center; gap: 4px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                ETA
+              </span>
+              <strong id="homeEta">--</strong>
+            </article>
+            <article>
+              <span style="display: flex; align-items: center; gap: 4px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+                Load
+              </span>
+              <strong id="homeLoad">--</strong>
+            </article>
+            <article>
+              <span style="display: flex; align-items: center; gap: 4px;">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                Status
+              </span>
+              <strong id="homeSafety">--</strong>
+            </article>
+          </div>
+          <div class="section-head">
+            <h3>Approaching PUVs</h3>
+            <button id="refreshMobile" class="text-button">Refresh</button>
+          </div>
+          <div id="mobileFleet" class="mobile-list"></div>
+        </section>
+
+        <section class="tab-panel" id="mapTab">
+          <div class="section-head map-section-head mb-0">
+          </div>
+          <div class="relative">
+            <div id="mobileMap" class="live-map"></div>
+            <div id="centerPinOverlay" class="center-pin-overlay hidden">
+              <div class="center-pin-marker">
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"></path>
+                  <circle cx="12" cy="10" r="3"></circle>
+                </svg>
+              </div>
+              <div class="center-pin-shadow"></div>
+            </div>
+            
+            <div class="map-legend">
+              <span><i class="dot green-dot"></i>Seats</span>
+              <span><i class="dot yellow-dot"></i>Standing</span>
+              <span><i class="dot red-dot"></i>Full</span>
+            </div>
+            
+            <!-- Selection Confirmation Bar -->
+            <div id="pinConfirmBar" class="pin-confirm-bar hidden">
+              <button id="confirmPinBtn" class="button primary block">Confirm Destination</button>
+              <button id="cancelPinBtn" class="button secondary block mt-2">Cancel</button>
+            </div>
+            
+            <div id="destinationConfirm" class="destination-confirm hidden"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="routesTab">
+          <div class="route-directory-sheet">
+            <div class="routes-header">
+              <h2>
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: text-bottom; margin-right: 8px;"><circle cx="6" cy="19" r="3"></circle><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"></path><circle cx="18" cy="5" r="3"></circle></svg><span>Explore Routes</span>
+              </h2>
+              <div id="routesCountrySelect" class="country-search-wrapper"></div>
+            </div>
+            <div class="routes-search-container">
+              <div class="routes-search-bar">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input id="routeSearch" class="route-search-input" placeholder="Search for a route..." />
+              </div>
+              <div class="routes-filter-wrap">
+                <div id="cityFilter" class="country-search-wrapper"></div>
+              </div>
+            </div>
+            <div id="routeList" class="route-list"></div>
+          </div>
+        </section>
+
+        <section class="tab-panel" id="chatTab">
+          <div class="chat-header" id="chatHeader">
+            <p class="eyebrow">AI boarding assistant</p>
+            <h2>Ask LoadSense</h2>
+            <p>Recommendations use live ETA, occupancy tier, and route safety context.</p>
+          </div>
+          <div id="chatTranscript" class="chat-transcript">
+            <div class="message-wrapper bot-wrapper">
+              <div class="bot-avatar">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+              </div>
+              <div class="message bot">Ask whether to board now, wait, or choose the least crowded PUV.</div>
+            </div>
+          </div>
+          <form id="chatForm" class="chat-compose">
+            <div class="chat-input-wrapper">
+              <input id="chatInput" placeholder="Type your message..." />
+            </div>
+            <button class="icon-button send-button" title="Send" aria-label="Send">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+            </button>
+          </form>
+        </section>
+
+        <nav class="mobile-nav" aria-label="Mobile tabs">
+          <button class="active" data-tab="homeTab"><span class="nav-icon">H</span>Home</button>
+          <button data-tab="mapTab"><span class="nav-icon">M</span>Map</button>
+          <button data-tab="routesTab"><span class="nav-icon">R</span>Routes</button>
+          <button data-tab="chatTab"><span class="nav-icon">C</span>Chat</button>
+        </nav>
+      </section>
+    </main>
+    <script src="vendor/leaflet/leaflet.js"></script>
+    <script src="vendor/leaflet/leaflet.markercluster.js"></script>
+    <script src="js/core.js"></script>
+    <script src="js/data.js"></script>
+    <script src="js/map.js"></script>
+    <script src="js/places.js"></script>
+    <script src="js/mobile.js"></script>
+    <script src="js/alerts.js"></script>
+    <script src="js/main.js"></script>
+    <script>
+      window.LoadSense?.initMobile?.();
+    </script>
+  </body>
+</html>
