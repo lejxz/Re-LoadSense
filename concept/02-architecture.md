@@ -1,7 +1,9 @@
 # 02 — Architecture
 
 > How the system is structured. Same three-tier concept as the original (edge → cloud →
-> clients), simplified for a solo Vercel build. Mermaid diagrams throughout.
+> clients). The old project's **HTML/CSS/JS frontend is kept**; the **Python/FastAPI backend
+> is replaced** by Next.js 16 API routes (TypeScript, Prisma, Vercel-native). Mermaid diagrams
+> throughout.
 
 ---
 
@@ -118,7 +120,7 @@ request handlers). So the socket.io service runs on a tiny persistent host (Rend
 Railway, or Fly.io — ~$5/month, or free on some tiers). The Next.js app connects to it via
 the gateway `?XTransformPort=3001` mechanism.
 
-**Fallback if budget is zero:** Skip the socket.io service entirely and use TanStack Query
+**Fallback if budget is zero:** Skip the socket.io service entirely and use the existing JS
 polling (5s interval). The map still works, just less smooth. This is a defensible fallback
 for a portfolio piece.
 
@@ -237,7 +239,7 @@ flowchart LR
     Sim[Simulator] -->|PUBLISH| Redis[(Vercel KV<br/>pubsub:fleet:PH)]
     Redis -->|fan-out| WS[socket.io service]
     WS -->|emit fleet:update| Client[Commuter Map<br/>subscribed to bbox]
-    Client -->|setQueryData| Cache[TanStack Query cache]
+    Client -->|setQueryData| Cache[existing JS state object]
     Cache -->|re-render| Map[Leaflet markers<br/>in-place update]
 ```
 
@@ -250,12 +252,12 @@ gateway constraint — never `io("http://localhost:3001")`). On connect:
 2. Server assigns the client to the relevant tile rooms.
 3. On fleet updates, the server emits only to clients in the relevant rooms.
 4. Client receives `fleet:update` events, calls `queryClient.setQueryData` to update the
-   TanStack Query cache, and the map markers update their positions in place.
+   existing JS state object, and the map markers update their positions in place.
 
 ### Reconnection
 
 Auto-reconnect with exponential backoff (1s, 2s, 4s, 8s, max 30s). On reconnect, the client
-re-subscribes to its current bounding box. While disconnected, TanStack Query falls back to
+re-subscribes to its current bounding box. While disconnected, the existing polling falls back to
 polling (5s interval) so the map still updates, just less smoothly.
 
 ---
@@ -296,8 +298,8 @@ have needed a 6th SQLite file and code changes across every read/write.
 | Database | 5 SQLite files, per-country fan-out | 1 Vercel Postgres, `countryCode` column | Fixes the N+5 fan-out slowness |
 | Live state | Process-local singleton (can't scale) | Redis (Vercel KV) | Shared state across workers |
 | Real-time | Frontend polled 15-30s, no WS | socket.io live updates | Smooth map, no 15s jumps |
-| Frontend | Vanilla HTML/CSS/JS, 3 pages | Next.js + Tailwind + shadcn/ui | Design system, type safety, responsive |
-| Map | Vendored Leaflet, clear+re-add flicker | react-leaflet + clustering + in-place updates | Smooth, no flicker |
+| Frontend | Vanilla HTML/CSS/JS, 3 pages | Next.js backend + existing HTML/CSS/JS | Design system, type safety, responsive |
+| Map | Vendored Leaflet, clear+re-add flicker | existing Leaflet (kept) + direction arrows added | Smooth, no flicker |
 | Deploy | Docker Compose, manual | Vercel auto-deploy | Zero-config, fast hosting |
 
 Every architectural choice traces back to fixing one of the seven problems. See

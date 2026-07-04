@@ -154,7 +154,7 @@ project rule, (c) no direction arrows on markers (commuters couldn't tell which 
 was heading), (d) only a 3-tier legend (Seats/Standing/Full) missing the overloaded tier.
 
 **How this project fixes it:**
-- **react-leaflet** (typed) + keep the in-place vehicle updates (the original was correct here).
+- Keep the existing Leaflet (already typed enough for vanilla JS). Keep the in-place vehicle updates (the original was correct here).
 - **Fix route polyline flicker**: only redraw polylines when the route selection changes, not
   on every fleet refresh.
 - **Teal route color** (not blue) per the project's no-indigo/blue rule.
@@ -170,8 +170,8 @@ systems. `!important` used 18+ times. No dark mode. No responsive design — a f
 phone-frame mock. `.hintrc` explicitly disabled accessibility hints.
 
 **How this project fixes it:**
-- **Tailwind CSS 4 + shadcn/ui** — a cohesive design system with a full token scale.
-- **Dark mode** via `next-themes` + token swap.
+- Keep the existing CSS design system (variables.css + components.css). Add dark mode via a class toggle on <html>.
+- Dark mode via vanilla JS class toggle + dark CSS variable overrides.
 - **Mobile-first responsive** — designed for a phone in hand, enhanced for desktop.
 - **Accessibility basics** — semantic HTML, labels, keyboard nav, ARIA live regions,
   `prefers-reduced-motion`.

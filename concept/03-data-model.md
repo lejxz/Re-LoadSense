@@ -3,6 +3,11 @@
 > **The little things.** Every table, every field, every type, every relationship, every index,
 > how data is stored, and how it's fetched. This is planned before any code because changing
 > the schema later means changing every file that touches it.
+>
+> **Implementation note:** the old project used raw `sqlite3` with 5 separate database files
+> (one per country) and manual `ALTER TABLE` hacks. This project replaces that with **Prisma
+> ORM** + a single SQLite file (dev) / Vercel Postgres (deploy). The schema below is the
+> Prisma schema — type-safe, migrated, and without the old project's fan-out problem.
 
 ---
 

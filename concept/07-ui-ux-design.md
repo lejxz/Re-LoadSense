@@ -1,7 +1,27 @@
 # 07 — UI/UX Design
 
-> Where each feature lives in the UI. Mobile-first commuter app (the showcase); minimal
-> functional operator console. Mermaid navigation flowcharts.
+> Where each feature lives in the UI. The old LoadSense project's HTML/CSS/JS is **kept and
+> improved** — this doc describes the existing design + the improvements added.
+>
+> **Existing CSS classes used (from `app/css/`):**
+> - `.phone-frame` — 430px phone mockup with dark border + rounded corners
+> - `.app-screen` — grid layout (header / search / content / nav)
+> - `.mobile-header` — greeting + brand name + country selector
+> - `.hero-card` — 24px rounded card with soft shadow (Best boarding option)
+> - `.quick-grid` — 3-column grid for stats + shortcuts
+> - `.mobile-list` — vehicle list container
+> - `.vehicle-card` — 24px rounded card with vehicle details + tier pill
+> - `.occupancy-pill` — colored pill (green/yellow/red/blinking_red)
+> - `.mobile-nav` — pill-shaped bottom nav (active = mint background)
+> - `.route-card`, `.route-list`, `.route-directory-sheet` — routes tab
+> - `.chat-header`, `.chat-transcript`, `.bot-avatar`, `.chat-compose` — chat tab
+> - `.live-map`, `.map-legend` — map tab
+> - `.eyebrow` — teal uppercase label
+> - `.transit-pill` — origin/destination search with colored dots
+>
+> **CSS files:** `variables.css` (tokens), `base.css` (typography), `components.css`
+> (buttons/pills/modals), `mobile.css` (phone frame/tabs/cards), `map.css` (map layout),
+> `operator.css` (console), `portal.css` (landing).
 
 ---
 
@@ -100,7 +120,7 @@ here and can immediately search for where they want to go.
 The showcase screen. Full-screen interactive map with customizable themes, direction-aware
 markers, route polylines, and a 4-tier legend.
 
-- **Full-screen Leaflet map** (react-leaflet) with **5 user-selectable tile themes** (see
+- Keep the existing Leaflet map with **5 user-selectable tile themes** (see
   [`05-tech-stack.md §6`](./05-tech-stack.md#6-map)):
   - OSM Standard, CartoDB Light, CartoDB Dark Matter, CyclOSM, Esri Satellite.
   - **Theme switcher button** (layer-stack icon, bottom-right above the locate FAB): opens a
@@ -339,7 +359,7 @@ scroll on narrow screens.
 
 ## 7. Dark mode
 
-- `next-themes` with `attribute="class"`.
+- Vanilla JS: toggle a 'dark' class on <html> + dark CSS variable overrides.
 - Three options: Light, Dark, System (default).
 - Toggle in the profile menu.
 - Full token swap: background, text, borders, cards all change. Tier colors stay the same.

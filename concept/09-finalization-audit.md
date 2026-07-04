@@ -73,15 +73,15 @@ Each improvement is verified against three criteria: **real problem** (confirmed
 |---|---|---|
 | Real problem? | ✅ Yes (reframed) | Original `map.js:73` `layerGroup.clearLayers()` cleared route polylines on every 3s refresh → route flicker. Route color was `#0b57d0` (blue, violates no-indigo/blue rule). No direction arrows. 3-tier legend (Seats/Standing/Full), missing overloaded. Vehicle markers DID update in place (`setLatLng`) — no vehicle flicker. |
 | Sound fix? | ✅ Yes | Fix: only redraw polylines on route-selection change (not every refresh). Teal route color. Direction arrows (▲/▼). 4-tier legend. 5 map themes. Keep the in-place vehicle updates + jeepney SVG markers (they were correct). |
-| Solo-achievable? | ✅ Yes | react-leaflet + a theme-switcher component + direction arrow in the divIcon. ~1.5 days. The 5 tile providers are free (OSM, CartoDB, CyclOSM, Esri) — no API key needed. |
+| Solo-achievable? | ✅ Yes | existing Leaflet (kept) + direction arrows added to the existing divIcon + theme switcher button. ~1 day. The 5 tile providers are free. |
 
-### Improvement 5 — Design system (Tailwind + shadcn + dark mode)
+### Improvement 5 — Design system (existing CSS + dark mode)
 
 | Criterion | Verdict | Evidence |
 |---|---|---|
 | Real problem? | ✅ Yes | Original: ~30 hardcoded hex values not in `variables.css` (14 vars only). Three overlapping modal systems. `!important` 18+ times. No dark mode. Fixed-width phone-frame mock. `.hintrc` disabled a11y hints. |
-| Sound fix? | ✅ Yes | Tailwind 4 + shadcn/ui (New York). Full token scale. `next-themes` dark mode. Mobile-first responsive. axe-core basics. This is the standard modern stack. |
-| Solo-achievable? | ✅ Yes | shadcn/ui gives accessible primitives out of the box. Tailwind 4 is fast. ~1 day for tokens + dark mode + responsive pass. |
+| Sound fix? | ✅ Yes | Keep the existing CSS design system (variables.css + components.css + mobile.css). Add dark mode via a class toggle on <html> + dark CSS variable overrides. The existing CSS is already polished — no rebuild needed. |
+| Solo-achievable? | ✅ Yes | The existing CSS is already good. Just add dark mode overrides + the 5th Menu tab. ~0.5 day. |
 
 ### Improvement 6 — Honest simulation (no fake CV)
 
@@ -271,7 +271,7 @@ its consumers' expected input. No orphaned dependencies.
 
 | Risk | Mitigation |
 |---|---|
-| socket.io mini-service deployment | Fallback to TanStack Query polling (5s) — map still works, less smooth. Documented in `05-tech-stack.md §5`. |
+| socket.io mini-service deployment | Fallback to existing JS polling (3-30s) — map still works, less smooth. Documented in `05-tech-stack.md §5`. |
 | OSRM polyline fetch at seed time | If OSRM is down, fall back to straight-line interpolation between origin/dest. The original did this (`populate_demo_data.py:36-47`). |
 | Playwright e2e flakiness | Only 2 e2e tests (commuter + operator flows). Manual testing is the primary verification. |
 | PostGIS unavailability on Vercel Postgres free tier | Use bounding-box TS math for geofencing. Documented in `03-data-model.md §1` + `05-tech-stack.md §4`. |
@@ -350,7 +350,7 @@ verifiable. The improvements keep what worked and fix what didn't.
 |---|---|---|
 | Auth approach | (A) NextAuth credentials, (B) Demo toggle | Start with B (demo toggle) for speed; upgrade to A if time permits. The portfolio story is the UI/map/chatbot, not auth. |
 | socket.io host | (A) Render free, (B) Railway, (C) Fly.io, (D) Skip (polling) | Try Render free tier first. If it doesn't hold WS, fall back to polling. Documented in `05-tech-stack.md §5`. |
-| Map library | (A) react-leaflet (raster), (B) MapLibre (vector) | react-leaflet — 90% of value at 20% complexity. Documented in `05-tech-stack.md §6`. |
+| Map library | (A) existing Leaflet (kept), (B) MapLibre (future) | existing Leaflet — already works, just add improvements. Documented in `05-tech-stack.md §6`. |
 | Occupancy sim pattern | (A) Sine wave + noise, (B) Biased random walk | Either is fine. Key: reaches all 4 tiers (including overloaded during rush hour). Decide during Step 1.3. |
 | Regulator dashboard | (A) Build it (simple), (B) Skip | Skip if time is short. The commuter + operator apps are the portfolio piece. Documented as optional in `01-overview.md §5`. |
 

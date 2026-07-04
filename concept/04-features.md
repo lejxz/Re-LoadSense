@@ -1,9 +1,39 @@
 # 04 — Features
 
-> The features this project builds, matching the original hackathon concept, with the variables
-> and data each feature needs. Every feature traces to the data model in
+> The features this project **improves**, matching the original hackathon concept. The old
+> project's UI (HTML/CSS/JS) and its working logic are **reused** — features below describe
+> what's kept, what's improved, and what's new. Every feature traces to the data model in
 > [`03-data-model.md`](./03-data-model.md) and to one of the seven problems in
 > [`01-overview.md`](./01-overview.md).
+>
+> **What's reused from the old project (kept as-is):**
+> - `app/js/core.js` — shared state object + `const api = origin + '/api'` fetch helper
+> - `app/js/data.js` — data fetching + dirty-checking
+> - `app/js/map.js` — Leaflet map, markers (in-place updates), polylines, clustering
+> - `app/js/mobile.js` — commuter tab logic (Home, Map, Routes, Chat)
+> - `app/js/operator.js` — operator console logic
+> - `app/js/places.js` — place search (Photon)
+> - `app/js/alerts.js` — alert submission
+> - `app/js/routes-admin.js` — route/vehicle admin
+> - `app/css/*` — all 7 CSS files (variables, base, components, mobile, map, operator, portal)
+> - `app/vendor/leaflet/` — vendored Leaflet + markercluster
+> - `app/mobile.html`, `app/operator.html`, `app/index.html` — HTML structure
+>
+> **What's improved (existing code modified):**
+> - `map.js` — add direction arrows, theme switcher, teal polylines, 4-tier legend
+> - `mobile.js` + `mobile.html` — add 5th Menu tab, SIM badge, Home search
+> - `routes-admin.js` — add sequenced vehicle-add form
+> - `variables.css` — add dark mode overrides
+> - `core.js` — add socket.io-client for live updates
+>
+> **What's new (built from scratch):**
+> - Next.js API routes (`src/app/api/`) replacing the Python/FastAPI backend
+> - Prisma schema + seed script
+> - Simulator (TypeScript, replacing `demo_simulator.py`)
+> - Calculation functions (ETA, demand, occupancy — replacing `phase2.py`)
+> - Chatbot service (consolidating 5 Python files into 1 TypeScript service)
+> - Alert service (replacing inline alert logic in `state.py`)
+> - socket.io mini-service
 
 ---
 
@@ -325,7 +355,7 @@ persistent across restarts). On a cache miss, calls Photon, caches in both.
 
 **What it does:** System-following + manual dark mode; mobile-first responsive design.
 
-**Variables/data:** UI preference (stored in a Zustand store + localStorage).
+**Variables/data:** UI preference (stored in vanilla JS + localStorage).
 
 **Fixes:** #5 (design — dark mode + responsive).
 
@@ -352,7 +382,7 @@ were scattered. This gives them a home.
   what data is collected (chatbot queries, PII-redacted).
 - **Logout** (if auth).
 
-**Variables/data it needs:** `User` (if auth), UI preferences (Zustand + localStorage).
+**Variables/data it needs:** `User` (if auth), UI preferences (vanilla JS + localStorage).
 
 **Fixes:** #5 (clean UI — centralized menu instead of scattered profile popups).
 
@@ -737,7 +767,7 @@ time.
 
 ### X-02 — Dark mode + design system
 
-**What it does:** Tailwind 4 + shadcn/ui with a full token scale; dark mode via `next-themes`.
+**What it does:** Existing CSS design system (kept); dark mode via vanilla JS class toggle.
 
 **Tier colors (the semantic palette):**
 - Available: green `#16a34a`
