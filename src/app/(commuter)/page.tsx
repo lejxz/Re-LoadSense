@@ -1,25 +1,12 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
-import { Search, MapPin, Navigation, MessageCircle, Bus, Clock, Users, Shield } from 'lucide-react'
-import { Input } from '@/components/ui/input'
+import { Search, MapPin, Navigation, MessageCircle, Bus, Clock, Users, Shield, RefreshCw } from 'lucide-react'
 import { TierPill } from '@/components/shared/tier-pill'
 import { useUIStore } from '@/stores/ui-store'
-import { fetchFleet, fetchPlaces, fetchRoutesNear } from './api'
-
-const C = {
-  teal: '#087b68',
-  tealDark: '#045c51',
-  mint: '#dff6ee',
-  ink: '#172027',
-  wash: '#f3f7f6',
-  panel: '#ffffff',
-  border: 'rgba(0,0,0,0.05)',
-  slate400: '#94a3b8',
-  slate500: '#64748b',
-}
+import { fetchFleet, fetchPlaces, fetchRoutesNear, type FleetVehicle } from './api'
 
 export default function HomePage() {
   const [query, setQuery] = useState('')
@@ -34,7 +21,7 @@ export default function HomePage() {
     staleTime: 300_000,
   })
 
-  const { data: fleet } = useQuery({
+  const { data: fleet, refetch } = useQuery({
     queryKey: ['fleet', 'home'],
     queryFn: () => fetchFleet({ online: true }),
     refetchInterval: 5000,
@@ -48,128 +35,173 @@ export default function HomePage() {
       return (tr[a.tier] ?? 9) - (tr[b.tier] ?? 9) || a.occupancy - b.occupancy
     })?.[0]
 
-  const onPlaceTap = useCallback(
-    (place: { name: string; lat: number; lon: number; placeType: string | null }) => {
-      setTripDestination({ lat: place.lat, lon: place.lon, name: place.name })
-    },
-    [setTripDestination],
-  )
-
   const planTrip = (place: { lat: number; lon: number; name?: string }) => {
     setTripDestination({ lat: place.lat, lon: place.lon, name: place.name })
     router.push('/plan')
   }
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-4 space-y-4">
+    <div style={{ height: '100%', overflow: 'auto', padding: '4px 18px 18px', display: 'flex', flexDirection: 'column', gap: '16px' }}>
       {/* Search bar */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2" size={18} style={{ color: C.slate400 }} />
-        <Input
+      <div style={{ position: 'relative' }}>
+        <Search size={18} style={{ position: 'absolute', left: '12px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
+        <input
           placeholder="Search places, landmarks, shops..."
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          className="pl-10 rounded-xl"
+          style={{
+            width: '100%',
+            padding: '12px 12px 12px 40px',
+            borderRadius: '12px',
+            border: '1px solid #d9e4e7',
+            background: '#fff',
+            fontSize: '14px',
+            outline: 'none',
+            fontFamily: 'inherit',
+          }}
         />
-        {searching && (
-          <div className="absolute right-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: C.slate400 }}>searching...</div>
-        )}
+        {searching && <span style={{ position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)', fontSize: '12px', color: '#94a3b8' }}>searching...</span>}
       </div>
 
       {/* Search results */}
       {places && places.length > 0 && (
-        <div className="space-y-2">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
           {places.map((p, i) => (
-            <PlaceResultCard key={i} place={p} onTap={onPlaceTap} onPlanTrip={planTrip} />
+            <PlaceResultCard key={i} place={p} onTap={(place) => setTripDestination({ lat: place.lat, lon: place.lon, name: place.name })} onPlanTrip={planTrip} />
           ))}
         </div>
       )}
       {places && places.length === 0 && query.length >= 2 && !searching && (
-        <p className="text-sm text-center py-4" style={{ color: C.slate400 }}>No results found. Try a different search.</p>
+        <p style={{ fontSize: '14px', color: '#94a3b8', textAlign: 'center', padding: '16px 0' }}>No results found. Try a different search.</p>
       )}
 
       {/* Default content */}
       {!query && (
-        <div className="space-y-4">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
           {/* Hero card */}
-          {bestVehicle && (
-            <div
-              className="p-4 space-y-3"
-              style={{ background: C.panel, borderRadius: '20px', boxShadow: '0 8px 24px rgba(0,0,0,0.08)' }}
-            >
-              <p className="text-xs font-bold uppercase tracking-wide" style={{ color: C.teal }}>Best boarding option</p>
-              <div>
-                <h2 className="text-xl font-bold" style={{ color: C.ink }}>{bestVehicle.vehicleCode}</h2>
-                <p className="text-sm" style={{ color: C.slate500 }}>Route {bestVehicle.routeCode} — {bestVehicle.routeName}</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <TierPill tier={bestVehicle.tier} />
-                <span className="text-xs" style={{ color: C.slate400 }}>
-                  {bestVehicle.occupancy}/{bestVehicle.capacity} riders • {bestVehicle.speedKph} kph
-                </span>
-              </div>
-            </div>
-          )}
+          <div style={{
+            background: '#fff',
+            border: '1px solid rgba(0,0,0,0.05)',
+            borderRadius: '24px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.04)',
+            padding: '18px',
+            display: 'grid',
+            gap: '10px',
+          }}>
+            <p style={{ color: '#087b68', fontSize: '12px', fontWeight: 800, textTransform: 'uppercase', margin: 0 }}>Best boarding option</p>
+            {bestVehicle ? (
+              <>
+                <h2 style={{ fontSize: '25px', lineHeight: 1.1, margin: 0, color: '#172027', fontFamily: 'Sora, Manrope, sans-serif' }}>
+                  {bestVehicle.vehicleCode}
+                </h2>
+                <p style={{ fontSize: '14px', color: '#4f616b', margin: 0 }}>Route {bestVehicle.routeCode} — {bestVehicle.routeName}</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <TierPill tier={bestVehicle.tier} />
+                  <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    {bestVehicle.occupancy}/{bestVehicle.capacity} riders • {bestVehicle.speedKph} kph
+                  </span>
+                </div>
+              </>
+            ) : (
+              <p style={{ fontSize: '14px', color: '#4f616b', margin: 0 }}>Waiting for telemetry...</p>
+            )}
+          </div>
 
           {/* Quick stats */}
-          <div className="grid grid-cols-3 gap-2">
-            <StatCard icon={<Clock size={14} />} label="ETA" value={bestVehicle ? '~5 min' : '--'} />
-            <StatCard icon={<Users size={14} />} label="Load" value={bestVehicle ? `${bestVehicle.occupancy}/${bestVehicle.capacity}` : '--'} />
-            <StatCard icon={<Shield size={14} />} label="Status" value={bestVehicle ? bestVehicle.tier.replace(/_/g, ' ') : '--'} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+            <QuickStat icon={<Clock size={14} />} label="ETA" value={bestVehicle ? '~5 min' : '--'} />
+            <QuickStat icon={<Users size={14} />} label="Load" value={bestVehicle ? `${bestVehicle.occupancy}/${bestVehicle.capacity}` : '--'} />
+            <QuickStat icon={<Shield size={14} />} label="Status" value={bestVehicle ? bestVehicle.tier.replace(/_/g, ' ') : '--'} />
           </div>
 
           {/* Quick shortcuts */}
-          <div className="grid grid-cols-3 gap-2">
-            <ShortcutCard icon={<MapPin size={20} />} label="Nearby stops" onClick={() => router.push('/map')} />
-            <ShortcutCard icon={<MessageCircle size={20} />} label="Least crowded" onClick={() => { setChatPreFill('which jeepney is least crowded now?'); router.push('/chat') }} />
-            <ShortcutCard icon={<Bus size={20} />} label="Browse routes" onClick={() => router.push('/routes')} />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+            <ShortcutButton icon={<MapPin size={20} />} label="Nearby" onClick={() => router.push('/map')} />
+            <ShortcutButton icon={<MessageCircle size={20} />} label="Least crowded" onClick={() => { setChatPreFill('which jeepney is least crowded now?'); router.push('/chat') }} />
+            <ShortcutButton icon={<Bus size={20} />} label="Routes" onClick={() => router.push('/routes')} />
           </div>
 
-          {/* Live fleet summary */}
-          {fleet && fleet.vehicles.length > 0 && (
-            <div className="space-y-2">
-              <h2 className="text-xs font-semibold uppercase tracking-wide" style={{ color: C.slate400 }}>Live Fleet</h2>
-              <div className="grid grid-cols-2 gap-2">
-                <div className="p-3 rounded-xl" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                  <div className="text-2xl font-bold" style={{ color: C.teal }}>{fleet.vehicles.length}</div>
-                  <div className="text-xs" style={{ color: C.slate400 }}>Active vehicles</div>
-                </div>
-                <div className="p-3 rounded-xl" style={{ background: C.panel, border: `1px solid ${C.border}` }}>
-                  <div className="flex flex-wrap gap-1">
-                    {Object.entries(fleet.vehicles.reduce((acc, v) => { acc[v.tier] = (acc[v.tier] ?? 0) + 1; return acc }, {} as Record<string, number>)).map(([tier]) => (
-                      <TierPill key={tier} tier={tier} className="text-[10px]" />
-                    ))}
-                  </div>
-                  <div className="text-xs mt-1" style={{ color: C.slate400 }}>Occupancy tiers</div>
-                </div>
-              </div>
+          {/* Approaching PUVs */}
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 700, color: '#172027', margin: 0, fontFamily: 'Sora, Manrope, sans-serif' }}>Approaching PUVs</h3>
+              <button onClick={() => refetch()} style={{ background: 'none', border: 'none', color: '#087b68', fontSize: '12px', fontWeight: 800, cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '4px' }}>
+                <RefreshCw size={12} /> Refresh
+              </button>
             </div>
-          )}
+            <div style={{ display: 'grid', gap: '10px' }}>
+              {fleet?.vehicles?.filter((v) => v.online).slice(0, 5).map((v) => (
+                <VehicleCard key={v.vehicleId} vehicle={v} />
+              )) ?? (
+                <p style={{ fontSize: '14px', color: '#94a3b8' }}>No live vehicles.</p>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>
   )
 }
 
-function StatCard({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
+function QuickStat({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
-    <div className="p-3 rounded-xl" style={{ background: C.panel, border: `1px solid ${C.border}`, boxShadow: '0 4px 12px rgba(0,0,0,0.04)' }}>
-      <span className="flex items-center gap-1 text-xs" style={{ color: C.slate400 }}>{icon} {label}</span>
-      <strong className="block mt-1 text-lg" style={{ color: C.ink }}>{value}</strong>
+    <div style={{
+      background: '#fff',
+      border: '1px solid rgba(0,0,0,0.05)',
+      borderRadius: '16px',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.02)',
+      padding: '12px',
+    }}>
+      <span style={{ display: 'flex', alignItems: 'center', gap: '4px', color: '#4f616b', fontSize: '12px' }}>{icon} {label}</span>
+      <strong style={{ display: 'block', marginTop: '4px', fontSize: '20px', color: '#172027' }}>{value}</strong>
     </div>
   )
 }
 
-function ShortcutCard({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
+function ShortcutButton({ icon, label, onClick }: { icon: React.ReactNode; label: string; onClick: () => void }) {
   return (
-    <button
-      onClick={onClick}
-      className="flex flex-col items-center gap-2 p-3 rounded-xl transition-colors hover:border-teal-400"
-      style={{ background: C.panel, border: `1px solid ${C.border}`, boxShadow: '0 4px 12px rgba(0,0,0,0.04)' }}
-    >
-      <span style={{ color: C.teal }}>{icon}</span>
-      <span className="text-xs font-medium" style={{ color: C.slate500 }}>{label}</span>
+    <button onClick={onClick} style={{
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: '8px',
+      padding: '12px',
+      borderRadius: '16px',
+      background: '#fff',
+      border: '1px solid rgba(0,0,0,0.05)',
+      boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.02)',
+      cursor: 'pointer',
+      transition: 'border-color 0.2s',
+    }}>
+      <span style={{ color: '#087b68' }}>{icon}</span>
+      <span style={{ fontSize: '12px', fontWeight: 600, color: '#475569' }}>{label}</span>
     </button>
+  )
+}
+
+function VehicleCard({ vehicle }: { vehicle: FleetVehicle }) {
+  return (
+    <div style={{
+      background: '#fff',
+      border: '1px solid rgba(0,0,0,0.05)',
+      borderRadius: '24px',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.12), 0 2px 8px rgba(0,0,0,0.04)',
+      padding: '13px',
+      display: 'grid',
+      gridTemplateColumns: '1fr auto',
+      gap: '10px',
+      alignItems: 'center',
+    }}>
+      <div>
+        <h4 style={{ fontSize: '15px', margin: 0, color: '#172027' }}>
+          {vehicle.vehicleCode} <span style={{ color: '#4f616b', fontWeight: 700 }}>• {vehicle.routeCode}</span>
+        </h4>
+        <p style={{ fontSize: '12px', color: '#94a3b8', margin: '2px 0 0' }}>
+          {vehicle.occupancy}/{vehicle.capacity} riders • {vehicle.speedKph} kph • {vehicle.direction}
+        </p>
+      </div>
+      <TierPill tier={vehicle.tier} />
+    </div>
   )
 }
 
@@ -191,39 +223,41 @@ function PlaceResultCard({
 
   return (
     <div
-      className="p-3 cursor-pointer rounded-xl transition-colors hover:border-teal-400"
-      style={{ background: C.panel, border: `1px solid ${C.border}`, boxShadow: '0 4px 12px rgba(0,0,0,0.04)' }}
       onClick={() => { setExpanded(!expanded); onTap(place) }}
+      style={{
+        background: '#fff',
+        border: '1px solid rgba(0,0,0,0.05)',
+        borderRadius: '16px',
+        boxShadow: '0 4px 12px rgba(0,0,0,0.08), 0 1px 4px rgba(0,0,0,0.02)',
+        padding: '13px',
+        cursor: 'pointer',
+      }}
     >
-      <div className="flex items-start gap-2">
-        <MapPin size={16} className="mt-0.5 shrink-0" style={{ color: C.teal }} />
-        <div className="flex-1 min-w-0">
-          <p className="font-medium text-sm truncate" style={{ color: C.ink }}>{place.name}</p>
-          {place.placeType && <p className="text-xs capitalize" style={{ color: C.slate400 }}>{place.placeType.replace(/_/g, ' ')}</p>}
+      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+        <MapPin size={16} style={{ color: '#087b68', marginTop: '2px', flexShrink: 0 }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <p style={{ fontWeight: 600, fontSize: '14px', color: '#172027', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{place.name}</p>
+          {place.placeType && <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0, textTransform: 'capitalize' }}>{place.placeType.replace(/_/g, ' ')}</p>}
         </div>
       </div>
       {expanded && nearbyRoutes && (
-        <div className="mt-2 pt-2 space-y-1" style={{ borderTop: `1px solid ${C.border}` }}>
+        <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #d9e4e7' }}>
           {nearbyRoutes.length > 0 ? (
             <>
-              <p className="text-xs" style={{ color: C.slate400 }}>Nearby routes:</p>
+              <p style={{ fontSize: '12px', color: '#94a3b8', margin: '0 0 4px' }}>Nearby routes:</p>
               {nearbyRoutes.slice(0, 3).map((r) => (
-                <div key={r.routeId} className="flex items-center gap-2 text-xs">
-                  <span className="font-mono font-semibold" style={{ color: C.teal }}>{r.routeCode}</span>
-                  <span className="truncate" style={{ color: C.slate500 }}>{r.routeName}</span>
-                  <span className="ml-auto" style={{ color: C.slate400 }}>{Math.round(r.distanceM)}m</span>
+                <div key={r.routeId} style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px' }}>
+                  <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#087b68' }}>{r.routeCode}</span>
+                  <span style={{ color: '#4f616b', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.routeName}</span>
+                  <span style={{ color: '#cbd5e1', marginLeft: 'auto' }}>{Math.round(r.distanceM)}m</span>
                 </div>
               ))}
-              <button
-                onClick={(e) => { e.stopPropagation(); onPlanTrip(place) }}
-                className="mt-2 w-full text-xs font-medium hover:underline"
-                style={{ color: C.teal }}
-              >
+              <button onClick={(e) => { e.stopPropagation(); onPlanTrip(place) }} style={{ marginTop: '8px', width: '100%', fontSize: '12px', fontWeight: 600, color: '#087b68', background: 'none', border: 'none', cursor: 'pointer', textAlign: 'left' }}>
                 Plan trip to here →
               </button>
             </>
           ) : (
-            <p className="text-xs" style={{ color: C.slate400 }}>No routes near this place.</p>
+            <p style={{ fontSize: '12px', color: '#94a3b8' }}>No routes near this place.</p>
           )}
         </div>
       )}
