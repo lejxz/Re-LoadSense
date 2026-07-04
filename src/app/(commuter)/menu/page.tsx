@@ -3,108 +3,74 @@
 import { useRouter } from 'next/navigation'
 import { useTheme } from 'next-themes'
 import { Moon, Sun, Monitor, Info, Shield, ArrowRight } from 'lucide-react'
-import { Card } from '@/components/ui/card'
 
 export default function MenuPage() {
   const router = useRouter()
   const { theme, setTheme } = useTheme()
 
   return (
-    <div className="h-full overflow-y-auto p-4 space-y-6">
-      <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Menu</h1>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', overflow: 'auto', padding: '14px 18px 18px', height: '100%' }}>
+      <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#172027', fontFamily: 'Sora, Manrope, sans-serif', margin: 0 }}>Menu</h2>
 
-      {/* Profile */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase">Profile</h2>
-        <Card className="p-4 flex items-center gap-3">
-          <div className="w-12 h-12 rounded-full bg-teal-100 dark:bg-teal-950 flex items-center justify-center">
-            <span className="text-teal-600 dark:text-teal-400 font-bold">C</span>
+      <section>
+        <h3 className="eyebrow" style={{ marginBottom: '8px' }}>Profile</h3>
+        <div className="hero-card" style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <div style={{ width: '48px', height: '48px', borderRadius: '50%', background: '#dff6ee', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+            <span style={{ fontWeight: 700, color: '#087b68' }}>C</span>
           </div>
-          <div className="flex-1">
-            <p className="text-sm font-medium text-slate-900 dark:text-slate-100">Commuter</p>
-            <p className="text-xs text-slate-400">Demo mode</p>
+          <div style={{ flex: 1 }}>
+            <p style={{ fontSize: '14px', fontWeight: 600, color: '#172027', margin: 0 }}>Commuter</p>
+            <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0 }}>Demo mode</p>
           </div>
-          <button
-            onClick={() => router.push('/operator')}
-            className="flex items-center gap-1 text-xs text-teal-600 dark:text-teal-400 hover:underline"
-          >
-            Switch to operator <ArrowRight size={12} />
-          </button>
-        </Card>
+          <button onClick={() => router.push('/operator')} className="text-button" style={{ display: 'flex', alignItems: 'center', gap: '4px', fontSize: '12px' }}>Switch to operator <ArrowRight size={12} /></button>
+        </div>
       </section>
 
-      {/* Preferences */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase">Preferences</h2>
-        <Card className="p-4 space-y-3">
+      <section>
+        <h3 className="eyebrow" style={{ marginBottom: '8px' }}>Preferences</h3>
+        <div className="hero-card" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
           <div>
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-2">Theme</p>
-            <div className="flex gap-2">
-              {[
-                { id: 'light', label: 'Light', icon: Sun },
-                { id: 'dark', label: 'Dark', icon: Moon },
-                { id: 'system', label: 'System', icon: Monitor },
-              ].map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  onClick={() => setTheme(id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
-                    theme === id
-                      ? 'bg-teal-600 text-white'
-                      : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-                  }`}
-                >
-                  <Icon size={14} /> {label}
-                </button>
+            <p style={{ fontSize: '14px', fontWeight: 600, color: '#4f616b', marginBottom: '8px' }}>Theme</p>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {[{ id: 'light', label: 'Light', icon: Sun }, { id: 'dark', label: 'Dark', icon: Moon }, { id: 'system', label: 'System', icon: Monitor }].map(({ id, label, icon: Icon }) => (
+                <button key={id} onClick={() => setTheme(id)} className={theme === id ? 'button primary' : 'button'} style={{ fontSize: '12px', padding: '6px 12px', minHeight: 'auto', display: 'flex', alignItems: 'center', gap: '4px' }}><Icon size={14} /> {label}</button>
               ))}
             </div>
           </div>
           <div>
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Language</p>
-            <p className="text-xs text-slate-400">English (more languages coming soon)</p>
+            <p style={{ fontSize: '14px', fontWeight: 600, color: '#4f616b', marginBottom: '4px' }}>Language</p>
+            <p style={{ fontSize: '12px', color: '#94a3b8' }}>English (more coming soon)</p>
           </div>
-        </Card>
+        </div>
       </section>
 
-      {/* About */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase">About</h2>
-        <Card className="p-4 space-y-2">
-          <div className="flex items-center gap-2">
-            <Info size={16} className="text-teal-600 dark:text-teal-400" />
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">What is Re-LoadSense?</p>
+      <section>
+        <h3 className="eyebrow" style={{ marginBottom: '8px' }}>About</h3>
+        <div className="hero-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <Info size={16} style={{ color: '#087b68' }} />
+            <p style={{ fontSize: '14px', fontWeight: 600, color: '#4f616b', margin: 0 }}>What is Re-LoadSense?</p>
           </div>
-          <p className="text-xs text-slate-400">
-            Re-LoadSense is a PUV occupancy intelligence platform that tells commuters how full
-            the next jeepney is, helps operators manage their fleet, and gives regulators
-            city-wide compliance data.
-          </p>
-          <div className="flex items-center gap-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-            <span className="text-xs px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-400 font-medium">
-              SIM DATA
-            </span>
-            <p className="text-xs text-slate-400">
-              All vehicle data is simulated for demo purposes.
-            </p>
+          <p style={{ fontSize: '13px', color: '#4f616b', margin: 0 }}>PUV occupancy intelligence platform — tells commuters how full the next jeepney is, helps operators manage fleets, gives regulators city-wide data.</p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '8px', paddingTop: '8px', borderTop: '1px solid #d9e4e7' }}>
+            <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '999px', background: '#fff8ef', color: '#8f5308', fontWeight: 700 }}>SIM DATA</span>
+            <p style={{ fontSize: '12px', color: '#94a3b8', margin: 0 }}>All vehicle data is simulated.</p>
           </div>
-        </Card>
+        </div>
       </section>
 
-      {/* Data & Privacy */}
-      <section className="space-y-2">
-        <h2 className="text-xs font-semibold text-slate-400 uppercase">Data & Privacy</h2>
-        <Card className="p-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Shield size={16} className="text-teal-600 dark:text-teal-400" />
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300">Your Data</p>
+      <section>
+        <h3 className="eyebrow" style={{ marginBottom: '8px' }}>Data & Privacy</h3>
+        <div className="hero-card">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+            <Shield size={16} style={{ color: '#087b68' }} />
+            <p style={{ fontSize: '14px', fontWeight: 600, color: '#4f616b', margin: 0 }}>Your Data</p>
           </div>
-          <p className="text-xs text-slate-400">
-            Chatbot queries are PII-redacted before storage. No personal data is collected in this demo.
-          </p>
-        </Card>
+          <p style={{ fontSize: '13px', color: '#4f616b', margin: 0 }}>Chatbot queries are PII-redacted. No personal data collected in this demo.</p>
+        </div>
       </section>
 
-      <p className="text-center text-xs text-slate-400 pb-4">Re-LoadSense v0.1.0 — Cebu Demo</p>
+      <p style={{ textAlign: 'center', fontSize: '12px', color: '#94a3b8' }}>Re-LoadSense v0.1.0 — Cebu Demo</p>
     </div>
   )
 }

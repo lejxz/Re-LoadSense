@@ -4,8 +4,6 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useRouter } from 'next/navigation'
 import { Search } from 'lucide-react'
-import { Input } from '@/components/ui/input'
-import { Card } from '@/components/ui/card'
 import { fetchRoutes } from '../api'
 
 export default function RoutesPage() {
@@ -19,75 +17,45 @@ export default function RoutesPage() {
     staleTime: 30_000,
   })
 
-  const filtered = data?.routes.filter(
-    (r) =>
-      !query ||
-      r.code.toLowerCase().includes(query.toLowerCase()) ||
-      r.name.toLowerCase().includes(query.toLowerCase()),
-  ) ?? []
+  const filtered = data?.routes.filter(r => !query || r.code.toLowerCase().includes(query.toLowerCase()) || r.name.toLowerCase().includes(query.toLowerCase())) ?? []
 
   return (
-    <div className="h-full overflow-y-auto p-4 space-y-4">
-      <h1 className="text-xl font-bold text-slate-900 dark:text-slate-100">Routes</h1>
-
-      {/* Search */}
-      <div className="relative">
-        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-        <Input
-          placeholder="Search route code or name..."
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          className="pl-10"
-        />
+    <div className="route-directory-sheet" style={{ padding: '4px 0 18px' }}>
+      <div className="routes-header">
+        <h2 style={{ fontSize: '20px', fontWeight: 700, color: '#172027', fontFamily: 'Sora, Manrope, sans-serif' }}>Explore Routes</h2>
       </div>
-
-      {/* Filter chips */}
-      <div className="flex gap-2">
-        {(['all', 'hasLive'] as const).map((f) => (
-          <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
-              filter === f
-                ? 'bg-teal-600 text-white'
-                : 'bg-slate-100 dark:bg-slate-800 text-slate-500'
-            }`}
-          >
-            {f === 'all' ? 'All routes' : 'Has live vehicles'}
+      <div className="routes-search-container">
+        <div className="routes-search-bar">
+          <Search size={16} className="search-icon" />
+          <input className="route-search-input" placeholder="Search for a route..." value={query} onChange={(e) => setQuery(e.target.value)} />
+        </div>
+      </div>
+      <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+        {(['all', 'hasLive'] as const).map(f => (
+          <button key={f} onClick={() => setFilter(f)} className={filter === f ? 'button primary' : 'button'} style={{ fontSize: '12px', padding: '6px 14px', minHeight: 'auto' }}>
+            {f === 'all' ? 'All routes' : 'Has live PUVs'}
           </button>
         ))}
       </div>
-
-      {/* Route list */}
-      <div className="space-y-2">
-        {isLoading && <p className="text-sm text-slate-400">Loading routes...</p>}
-        {filtered.map((r) => (
-          <Card
-            key={r.id}
-            className="p-3 cursor-pointer hover:border-teal-400 transition-colors"
-            onClick={() => router.push(`/routes/${r.id}`)}
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 rounded-lg bg-teal-100 dark:bg-teal-950 flex items-center justify-center shrink-0">
-                <span className="text-xs font-bold text-teal-600 dark:text-teal-400">{r.code}</span>
+      <div className="route-list">
+        {isLoading && <p className="muted">Loading routes...</p>}
+        {filtered.map(r => (
+          <div key={r.id} className="route-card" style={{ cursor: 'pointer' }} onClick={() => router.push(`/routes/${r.id}`)}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+              <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: '#dff6ee', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                <span style={{ fontSize: '12px', fontWeight: 700, color: '#087b68' }}>{r.code}</span>
               </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-slate-900 dark:text-slate-100 truncate">{r.name}</p>
-                <div className="flex items-center gap-2 mt-0.5">
-                  <span className="text-xs text-slate-400">{r.vehicleCount} live</span>
-                  {r.allowedVehicleTypes.map((t) => (
-                    <span key={t} className="text-[10px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 capitalize">
-                      {t}
-                    </span>
-                  ))}
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <p style={{ fontSize: '14px', fontWeight: 600, color: '#172027', margin: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.name}</p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '2px' }}>
+                  <span style={{ fontSize: '12px', color: '#94a3b8' }}>{r.vehicleCount} live</span>
+                  {r.allowedVehicleTypes.map(t => <span key={t} style={{ fontSize: '10px', padding: '2px 6px', borderRadius: '4px', background: '#f3f7f6', color: '#4f616b', textTransform: 'capitalize' }}>{t}</span>)}
                 </div>
               </div>
             </div>
-          </Card>
+          </div>
         ))}
-        {filtered.length === 0 && !isLoading && (
-          <p className="text-sm text-slate-400 text-center py-4">No routes found.</p>
-        )}
+        {filtered.length === 0 && !isLoading && <p className="muted" style={{ textAlign: 'center', padding: '16px 0' }}>No routes found.</p>}
       </div>
     </div>
   )
