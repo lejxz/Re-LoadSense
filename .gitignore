@@ -68,3 +68,10 @@ db/*.db-journal
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+# Sandbox / scaffold artifacts (not part of Re-LoadSense)
+/.zscripts/
+/Caddyfile
+/download/
+/examples/
+/tool-results/
+.env
