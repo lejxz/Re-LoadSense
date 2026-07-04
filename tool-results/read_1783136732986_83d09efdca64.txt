@@ -1,0 +1,702 @@
+     1→# 03 — Full Necessary Features List (2B)
+     2→
+     3→> The complete, prioritized feature inventory for Re-LoadSense. Every feature has an ID, a
+     4→> category, a priority tier, acceptance criteria, and a traceability link to the concept
+     5→> (`02-improved-concept.md`) and the lessons it addresses (`01-lessons-learned.md`). The
+     6→> roadmap (`04-roadmap-and-milestones.md`) sequences these into shippable milestones.
+     7→
+     8→---
+     9→
+    10→## How to read this document
+    11→
+    12→### Priority tiers
+    13→
+    14→| Tier | Meaning | Ships in |
+    15→|---|---|---|
+    16→| **P0** | Launch blocker. The pilot cannot go live without this. | Milestone 1–2 |
+    17→| **P1** | Core value. The product is meaningfully incomplete without this. | Milestone 2–3 |
+    18→| **P2** | Important Differentiator. Significantly improves the product. | Milestone 3–4 |
+    19→| **P3** | Enhancement. Nice-to-have, defensible to defer post-pilot. | Milestone 4–5 |
+    20→| **P4** | Future. Explicitly out of v1 scope; documented for continuity. | Post-pilot |
+    21→
+    22→### Categories
+    23→
+    24→- **C** — Commuter-facing (commuter PWA)
+    25→- **O** — Operator-facing (operator console)
+    26→- **R** — Regulator-facing (regulator dashboard)
+    27→- **D** — Driver-facing (in-vehicle display + LED)
+    28→- **E** — Edge (in-vehicle device + agent)
+    29→- **B** — Backend / platform (cloud services, API, data)
+    30→- **M** — Machine learning (models, MLOps)
+    31→- **S** — Security & compliance
+    32→- **N** — Non-functional (performance, reliability, observability)
+    33→- **X** — Cross-cutting / infrastructure (CI/CD, tooling)
+    34→
+    35→### Feature ID convention
+    36→
+    37→`<category>-<number>`, e.g., `C-01`, `E-03`, `S-02`. IDs are stable; features are never
+    38→renumbered, only deprecated.
+    39→
+    40→### Acceptance criteria format
+    41→
+    42→Each feature lists concrete, testable acceptance criteria. "Done" means every criterion
+    43→passes in CI and in a manual pilot check.
+    44→
+    45→---
+    46→
+    47→## Table of contents
+    48→
+    49→1. [Commuter features (C)](#1-commuter-features-c)
+    50→2. [Operator features (O)](#2-operator-features-o)
+    51→3. [Regulator features (R)](#3-regulator-features-r)
+    52→4. [Driver-facing features (D)](#4-driver-facing-features-d)
+    53→5. [Edge features (E)](#5-edge-features-e)
+    54→6. [Backend / platform features (B)](#6-backend--platform-features-b)
+    55→7. [Machine-learning features (M)](#7-machine-learning-features-m)
+    56→8. [Security & compliance features (S)](#8-security--compliance-features-s)
+    57→9. [Non-functional features (N)](#9-non-functional-features-n)
+    58→10. [Cross-cutting / infrastructure features (X)](#10-cross-cutting--infrastructure-features-x)
+    59→11. [Summary count by tier](#11-summary-count-by-tier)
+    60→
+    61→---
+    62→
+    63→## 1. Commuter features (C)
+    64→
+    65→### C-01 — Live fleet map with color-coded occupancy markers — P0
+    66→
+    67→**Concept:** §3.1, §9.2 · **Lessons:** §3.2 (XSS), §3.6 (no state mgmt)
+    68→
+    69→A full-screen map showing PUV markers color-coded by the four-tier occupancy state (🟢 / 🟡 /
+    70→🔴 / 🔴-blink). Markers update in real time via WebSocket.
+    71→
+    72→**Acceptance criteria:**
+    73→- Map renders within 2s of page load on a mid-range Android phone (Chrome).
+    74→- Markers reflect the current occupancy tier with both color and an accessible text label.
+    75→- Markers update within 3s of a telemetry event on the backend.
+    76→- Tapping a marker opens a detail card (vehicle ID, route, ETA, tier, last updated).
+    77→- Map subscribes only to the visible bounding box (server filters), not the whole fleet.
+    78→- Works offline using cached tiles (stale-while-revalidate) with a visible "offline" banner.
+    79→- No XSS vectors (React auto-escaping; no `dangerouslySetInnerHTML`).
+    80→
+    81→### C-02 — Stop-level ETA prediction display — P0
+    82→
+    83→**Concept:** §8.2, §9.2 · **Lessons:** §5.3 (target leakage)
+    84→
+    85→For a selected vehicle, show predicted arrival time at each remaining stop on its route.
+    86→
+    87→**Acceptance criteria:**
+    88→- ETA values are sourced from the versioned ONNX ETA model (not a synthetic formula).
+    89→- ETA includes a confidence band (e.g., "3–5 min") during cold-start periods.
+    90→- ETA refreshes when the vehicle moves or every 30s, whichever is first.
+    91→- If the model is unavailable, UI shows "historical average" with an honest source label.
+    92→- ETA values are deterministic within a 30s cache window (no jitter between refreshes).
+    93→
+    94→### C-03 — Boarding-assistant chatbot — P0
+    95→
+    96→**Concept:** §8.4, §9.2 · **Lessons:** §2.1 (5 chatbot files), §3.4 (no i18n)
+    97→
+    98→A natural-language assistant answering "which jeepney is least crowded right now?" and similar
+    99→queries, grounded in live fleet state.
+   100→
+   101→**Acceptance criteria:**
+   102→- Single chatbot service with a strategy interface (heuristic + optional LLM).
+   103→- Heuristic strategy is always available offline; never hallucinates route facts.
+   104→- LLM strategy uses RAG: cited route codes / vehicle IDs must exist in retrieved context.
+   105→- Detects query language (en, fil, ceb, id, ms, th, vi) and responds in the same language.
+   106→- PII (phone numbers, email) is redacted before persistence.
+   107→- Per-user rate limit (10 queries/min).
+   108→- Chat history persists across sessions for authenticated users.
+   109→- ARIA live region announces bot responses to screen readers.
+   110→
+   111→### C-04 — Multi-leg trip planning — P1
+   112→
+   113→**Concept:** §5.2 (split transit module), §9.2 · **Lessons:** §2.5 (god-module)
+   114→
+   115→Given an origin and destination, suggest multi-leg journeys (walk → board → transfer →
+   116→alight → walk) with live occupancy and ETA for each leg.
+   117→
+   118→**Acceptance criteria:**
+   119→- Returns at least 3 ranked suggestions when a single-leg route exists.
+   120→- Each suggestion shows: total time, walking distance, board/alight stops, live occupancy
+   121→  tier, ETA for each leg.
+   122→- Handles "no route found" gracefully with an explanatory message.
+   123→- Respects a maximum walking distance (configurable, default 500m, relaxed 1500m).
+   124→- Results update if the underlying fleet state changes significantly (debounced).
+   125→
+   126→### C-05 — Route directory & search — P1
+   127→
+   128→**Concept:** §7.2, §9.2 · **Lessons:** §2.6 (no pagination)
+   129→
+   130→A searchable, filterable list of routes with code, name, region, and live vehicle count.
+   131→
+   132→**Acceptance criteria:**
+   133→- Cursor-based pagination (default 20 per page, max 100).
+   134→- Filter by country, region, and "has live vehicles."
+   135→- Full-text search on route code and name.
+   136→- Tapping a route shows its geometry on the map and its live vehicles.
+   137→- Searchable dropdowns are accessible (ARIA listbox, keyboard arrow nav).
+   138→
+   139→### C-06 — Place search & geocoding — P1
+   140→
+   141→**Concept:** §5.2, §7.2 · **Lessons:** §2.10 (no rate limit)
+   142→
+   143→Search for places (landmarks, barangays, streets) to use as trip origin/destination.
+   144→
+   145→**Acceptance criteria:**
+   146→- Uses Photon geocoder with a valid contact User-Agent (Nominatim policy compliance).
+   147→- Results are debounced (300ms), cached (TTL 5min, bounded LRU max 1000 entries).
+   148→- Rate-limited (30 requests/min per user).
+   149→- Graceful degradation: if geocoder is unavailable, show "search unavailable" (no silent
+   150→  failure).
+   151→- No PII in search queries is persisted.
+   152→
+   153→### C-07 — Commuter account & preferences — P1
+   154→
+   155→**Concept:** §10.1, §10.2 · **Lessons:** §2.2 (no auth)
+   156→
+   157→Commuters can register (email or phone OTP), log in, and set preferences.
+   158→
+   159→**Acceptance criteria:**
+   160→- Registration via email+password (bcrypt) or phone+OTP.
+   161→- JWT access (15min) + refresh (7d, rotated) tokens in HttpOnly SameSite=Strict Secure cookies.
+   162→- Preferences: default country/city, language, notification opt-in.
+   163→- Account deletion (right to erasure) works within 24h.
+   164→
+   165→### C-08 — Occupancy notifications — P2
+   166→
+   167→**Concept:** §9.5 · **Lessons:** §3.6 (no real-time)
+   168→
+   169→Commuters can subscribe to a route+stop and get a push notification when a vehicle with
+   170→"available" tier is N minutes away.
+   171→
+   172→**Acceptance criteria:**
+   173→- Web Push API (with service worker).
+   174→- Configurable threshold (tier + minutes away).
+   175→- Max 5 active subscriptions per commuter (rate-limit protection).
+   176→- Notification includes vehicle ID, route, ETA, tier.
+   177→- Respects Do Not Disturb hours (configurable).
+   178→
+   179→### C-09 — Offline mode & PWA install — P1
+   180→
+   181→**Concept:** §9.1, §9.4 · **Lessons:** §3.5 (no PWA)
+   182→
+   183→The commuter app is installable and works offline.
+   184→
+   185→**Acceptance criteria:**
+   186→- `manifest.json` with icons, name, theme color, start_url, display: standalone.
+   187→- Service worker (Workbox): app-shell precache, stale-while-revalidate for map tiles,
+   188→  network-first for fleet data with cache fallback.
+   189→- Offline banner appears when network is lost; disappears on reconnect.
+   190→- Install prompt works on Android Chrome and iOS Safari.
+   191→- Offline-cached routes survive a hard refresh.
+   192→
+   193→### C-10 — Localization (i18n) — P1
+   194→
+   195→**Concept:** §9.1, §9.3 · **Lessons:** §3.4 (no i18n)
+   196→
+   197→Full UI localization for ASEAN languages.
+   198→
+   199→**Acceptance criteria:**
+   200→- Locales: en, fil, ceb (Philippines); id (Indonesia); ms (Malaysia); th (Thailand); vi
+   201→  (Vietnam).
+   202→- Language switcher in settings; preference persisted.
+   203→- All UI strings externalized (no hardcoded English in components).
+   204→- Dates, numbers, currency formatted via `Intl` per locale.
+   205→- Per-country currency (PHP, IDR, MYR, THB, VND) — no hardcoded "PHP".
+   206→
+   207→### C-11 — Dark mode — P2
+   208→
+   209→**Concept:** §9.4 · **Lessons:** §3.7 (no dark mode)
+   210→
+   211→System-following + manual dark mode.
+   212→
+   213→**Acceptance criteria:**
+   214→- `prefers-color-scheme` respected by default.
+   215→- Manual toggle in settings (light / dark / system), persisted.
+   216→- Full token-scale dark theme (not just map tiles).
+   217→- `prefers-reduced-motion` respected (no blink animation in reduced-motion mode).
+   218→
+   219→### C-12 — Accessibility (a11y) — P0
+   220→
+   221→**Concept:** §9.3 · **Lessons:** §3.3 (no a11y)
+   222→
+   223→The commuter app meets WCAG 2.1 AA.
+   224→
+   225→**Acceptance criteria:**
+   226→- axe-core in CI: zero violations on every page.
+   227→- Keyboard navigation: every interactive element reachable + operable via keyboard.
+   228→- Screen reader announcements for chat, toasts, tier changes (ARIA live regions).
+   229→- Focus traps in modals; ESC closes; focus returns to trigger.
+   230→- Color is never the only state indicator (tier labels accompany colors).
+   231→- Skip-to-content link present.
+   232→- All form inputs have associated `<label>`s.
+   233→
+   234→---
+   235→
+   236→## 2. Operator features (O)
+   237→
+   238→### O-01 — Fleet list & live map — P0
+   239→
+   240→**Concept:** §5.3, §9.2 · **Lessons:** §2.3 (fan-out), §2.4 (no service layer)
+   241→
+   242→A real-time fleet view scoped to the operator's vehicles.
+   243→
+   244→**Acceptance criteria:**
+   245→- Shows all vehicles owned by the operator with: ID, plate, route, current tier, last seen,
+   246→  online status, current speed.
+   247→- Filterable by route, tier, online status; sortable by any column.
+   248→- Cursor pagination; default 50 per page.
+   249→- Live updates via WebSocket (new telemetry, tier changes, alerts).
+   250→- Clicking a vehicle centers the map and opens a detail panel.
+   251→- Operator sees only their own vehicles (RLS-enforced).
+   252→
+   253→### O-02 — Alert verification workflow — P0
+   254→
+   255→**Concept:** §3.1, §7.2 · **Lessons:** original had this (good) but no auth
+   256→
+   257→The structured ack → verify → false-alarm / escalate workflow.
+   258→
+   259→**Acceptance criteria:**
+   260→- Alerts list with filters (type, severity, status, vehicle, time range).
+   261→- Each alert has: type (overload, deviation, anomaly, signal-loss), severity, evidence
+   262→  (telemetry snapshot), raised time, vehicle, route.
+   263→- Actions: acknowledge (claim), verify (real incident), false-alarm (dismiss with reason),
+   264→  escalate (route to admin/LGU).
+   265→- Every action is audited (who, when, what, note).
+   266→- Acknowledged alerts have a response-time SLA indicator.
+   267→- No auto-escalation without human action (operator-first principle preserved).
+   268→
+   269→### O-03 — Demand forecast dashboard — P1
+   270→
+   271→**Concept:** §8.3 · **Lessons:** §5.2 (train/serve mismatch), §5.4 (non-deterministic)
+   272→
+   273→Per-route hourly demand forecast for fleet allocation decisions.
+   274→
+   275→**Acceptance criteria:**
+   276→- Bar/line chart of predicted ridership by route × hour for the next 24h.
+   277→- Forecast source labeled honestly ("Prophet model v1.2" or "historical mean fallback").
+   278→- Values are deterministic within a 1h cache window.
+   279→- Filterable by route and date range.
+   280→- Exportable as CSV.
+   281→- Comparison view: forecast vs. actuals (backtest) for the last 7 days.
+   282→
+   283→### O-04 — Vehicle management (CRUD) — P1
+   284→
+   285→**Concept:** §7.2, §10.2 · **Lessons:** §2.2 (no auth on destructive ops)
+   286→
+   287→Create, read, update, deactivate vehicles.
+   288→
+   289→**Acceptance criteria:**
+   290→- Create vehicle: plate, route, capacity, device binding, operator.
+   291→- Edit vehicle: all fields except ID.
+   292→- Deactivate vehicle (soft delete): stops appearing in live fleet; data retained.
+   293→- Hard delete is admin-only and audited.
+   294→- Plate uniqueness enforced within operator.
+   295→- Device binding shows the bound device's status + last heartbeat.
+   296→
+   297→### O-05 — Route management & import — P1
+   298→
+   299→**Concept:** §7.2, §7.3 · **Lessons:** §2.5 (no validation), §2.6 (no size limit)
+   300→
+   301→Create, edit, import routes from GeoJSON / CSV / GTFS.
+   302→
+   303→**Acceptance criteria:**
+   304→- Manual route creation: code, name, region, stop list (lat/lon validated), fare config.
+   305→- Import: streaming parse, 5MB / 10,000-row cap, format auto-detection.
+   306→- GeoJSON LineString validation (≥2 points, valid coordinates).
+   307→- GTFS import: shapes.txt + stops.txt + stop_times.txt.
+   308→- Duplicate detection (route code within country) → 409 with clear message.
+   309→- Dry-run / preview mode before commit.
+   310→- All operations audited.
+   311→
+   312→### O-06 — Device management — P1
+   313→
+   314→**Concept:** §4.7, §7.2, §10.2 · **Lessons:** §4.3 (no device mgmt)
+   315→
+   316→Provision, bind, monitor, revoke edge devices.
+   317→
+   318→**Acceptance criteria:**
+   319→- Provision device: generates a device ID + enrollment token for on-device cert install.
+   320→- Bind device to vehicle (one device ↔ one vehicle; binding changes audited).
+   321→- Device list: ID, hardware model, firmware version, model version, bound vehicle, status
+   322→  (provisioned/active/revoked), last heartbeat.
+   323→- Revoke device: cert revoked at CA; future telemetry rejected; audited.
+   324→- OTA: trigger firmware / model update for a device or fleet; A/B partition status visible.
+   325→- Heartbeat lag alerting (device silent > 5min).
+   326→
+   327→### O-07 — Audit log — P1
+   328→
+   329→**Concept:** §6.1, §10.2 · **Lessons:** §2.2 (no audit)
+   330→
+   331→Immutable record of all operator/admin actions.
+   332→
+   333→**Acceptance criteria:**
+   334→- Every state-changing action logged: actor, action, resource, before/after, timestamp, IP,
+   335→  user-agent.
+   336→- Filterable by actor, action, resource, time range.
+   337→- Exportable as CSV (admin only).
+   338→- Tamper-evident (append-only table; no UPDATE/DELETE without superadmin break-glass).
+   339→- Retained 3 years.
+   340→
+   341→### O-08 — Operator reports — P2
+   342→
+   343→**Concept:** §9.2 · **Lessons:** —
+   344→
+   345→Daily/weekly summary reports for the operator's fleet.
+   346→
+   347→**Acceptance criteria:**
+   348→- Fleet utilization (vehicles active / total, by hour).
+   349→- On-time performance vs. scheduled frequency (if schedule exists).
+   350→- Alert summary (raised / verified / false-alarm / escalated, by type).
+   351→- Demand vs. actuals variance.
+   352→- Exportable as PDF + CSV.
+   353→- Schedulable as a weekly email.
+   354→
+   355→---
+   356→
+   357→## 3. Regulator features (R)
+   358→
+   359→### R-01 — City-wide compliance dashboard — P2
+   360→
+   361→**Concept:** §3.1, §9.2, §11.4 · **Lessons:** §11 (privacy)
+   362→
+   363→Aggregated, anonymized compliance metrics for the LGU.
+   364→
+   365→**Acceptance criteria:**
+   366→- Overload incidents by route / hour / operator (no individual driver data).
+   367→- Compliance rate (vehicles not overloaded vs. total active).
+   368→- Hotspot heatmap (aggregated to barangay/zone level — no individual vehicle tracking).
+   369→- Trend over time (daily/weekly/monthly).
+   370→- Data is delayed ≥15min (no real-time surveillance of specific vehicles).
+   371→- Exportable reports for policy meetings.
+   372→- Access is scoped to the regulator's country (RLS).
+   373→
+   374→### R-02 — Demand & supply gap analysis — P3
+   375→
+   376→**Concept:** §8.3 · **Lessons:** —
+   377→
+   378→Where is demand exceeding supply, by route and hour?
+   379→
+   380→**Acceptance criteria:**
+   381→- Demand (forecast + actual ridership) vs. supply (deployed vehicles × capacity) by route ×
+   382→  hour.
+   383→- Gap heatmap; top-10 underserved route-hours.
+   384→- Historical trend (4-week rolling).
+   385→- Exportable.
+   386→
+   387→### R-03 — Operator comparison (anonymized) — P3
+   388→
+   389→**Concept:** §11.4 · **Lessons:** —
+   390→
+   391→Compare operators on compliance, utilization, alert response time — without identifying
+   392→individual drivers.
+   393→
+   394→**Acceptance criteria:**
+   395→- Operators listed by license number (not name) unless the regulator has explicit consent.
+   396→- Metrics: compliance rate, alert response time p50/p95, fleet utilization.
+   397→- Benchmark vs. city median.
+   398→- Anonymized; individual driver data never shown.
+   399→
+   400→---
+   401→
+   402→## 4. Driver-facing features (D)
+   403→
+   404→### D-01 — Windshield LED strip display — P0
+   405→
+   406→**Concept:** §4.1, §4.3 · **Lessons:** original had this (good)
+   407→
+   408→The four-tier LED strip visible to waiting commuters from across the street.
+   409→
+   410→**Acceptance criteria:**
+   411→- LED colors: 🟢 green (available), 🟡 yellow (filling), 🔴 red (at capacity), 🔴-blink
+   412→  (overloaded).
+   413→- Tier transitions have hysteresis (must hold new tier ≥10s before LED changes) to prevent
+   414→  flicker.
+   415→- LED brightness adjusts to ambient light (day/night).
+   416→- If the edge device loses cloud connectivity, the LED continues to reflect the latest
+   417→  on-device occupancy count (offline-first).
+   418→- LED self-test on device boot.
+   419→
+   420→### D-02 — Driver minimal display (optional) — P3
+   421→
+   422→**Concept:** §4.1 · **Lessons:** —
+   423→
+   424→A small in-cabin display for the driver showing current occupancy count, tier, and active
+   425→alerts.
+   426→
+   427→**Acceptance criteria:**
+   428→- E-ink or low-power LCD (no distracting backlight).
+   429→- Shows: current count / capacity, tier, active alert count.
+   430→- No personal commuter data.
+   431→- Audible alert on overload tier reached.
+   432→- Read-only; driver cannot modify data.
+   433→
+   434→---
+   435→
+   436→## 5. Edge features (E)
+   437→
+   438→### E-01 — Real YOLOv8-nano passenger detection — P0
+   439→
+   440→**Concept:** §4.1, §4.3 · **Lessons:** §4.1 (fake CV — the critical integrity fix)
+   441→
+   442→On-device object detection of passengers using YOLOv8-nano.
+   443→
+   444→**Acceptance criteria:**
+   445→- YOLOv8-nano model loaded via Ultralytics; runs fully offline.
+   446→- Inference at ≥10 fps on Raspberry Pi 5 (8GB) at 720p input.
+   447→- Fine-tuned on labeled overhead PUV door footage (collected under written consent).
+   448→- Model version reported in every telemetry payload.
+   449→- Detection confidence threshold configurable; default 0.4.
+   450→- No images or bounding boxes leave the device (only aggregate counts).
+   451→
+   452→### E-02 — ByteTrack multi-object tracking — P0
+   453→
+   454→**Concept:** §4.3 · **Lessons:** §4.1 (person_id hardcoded to 1)
+   455→
+   456→Persistent track IDs across frames for accurate line-crossing direction detection.
+   457→
+   458→**Acceptance criteria:**
+   459→- ByteTrack (or equivalent) assigns persistent track IDs per person.
+   460→- Track IDs are ephemeral (reset on trip end / power cycle), never telemetered.
+   461→- Direction (boarding vs. alighting) determined by centroid velocity vs. line normal.
+   462→- Handles occlusion (person hidden behind another for <1s retains ID).
+   463→- Handles partial exits (person leaves frame edge) gracefully.
+   464→
+   465→### E-03 — Bidirectional line-crossing counter — P0
+   466→
+   467→**Concept:** §4.3 · **Lessons:** §4.1
+   468→
+   469→Counts boardings and alightings by tracking line crossings.
+   470→
+   471→**Acceptance criteria:**
+   472→- Virtual line position configurable (calibration step at install).
+   473→- Boarding = crossing in the "into vehicle" direction; alighting = opposite.
+   474→- Per-event count deltas (not just cumulative).
+   475→- Reconciliation: `current = max(0, prev + boarded - alighted)`.
+   476→- Count never goes negative; never exceeds capacity + tolerance.
+   477→
+   478→### E-04 — Four-tier occupancy classification with hysteresis — P0
+   479→
+   480→**Concept:** §4.3, §6.1 · **Lessons:** §2.7 (magic thresholds → config)
+   481→
+   482→Maps raw count to the four-tier state.
+   483→
+   484→**Acceptance criteria:**
+   485→- Tier thresholds configurable per-vehicle (based on capacity): e.g., available = 0–60%,
+   486→  filling = 60–90%, at_capacity = 90–100%, overloaded = >100%.
+   487→- Hysteresis: tier must hold for N seconds (configurable, default 10s) before changing.
+   488→- Thresholds stored in `country_config` / vehicle config, not hardcoded.
+   489→
+   490→### E-05 — GPS acquisition & dead-reckoning — P0
+   491→
+   492→**Concept:** §4.1 · **Lessons:** §4.3 (no GPS noise model)
+   493→
+   494→Position acquisition with fallback.
+   495→
+   496→**Acceptance criteria:**
+   497→- Primary: serial NMEA GPS at 1Hz.
+   498→- Fallback: cell-tower triangulation via modem if GPS lost >30s.
+   499→- Dead-reckoning: if both lost, extrapolate from last known speed/heading for ≤60s.
+   500→- GPS quality (accuracy, fix type) reported in telemetry `signal_quality`.
+   501→- Speed sanity filter: rejects spikes (>200 kph).
+   502→
+   503→### E-06 — Offline telemetry buffer — P0
+   504→
+   505→**Concept:** §4.6 · **Lessons:** §4.3 (silent drop on failure)
+   506→
+   507→Local SQLite queue for unsent telemetry.
+   508→
+   509→**Acceptance criteria:**
+   510→- Capacity ≥7 days at peak rate (~20k events/day).
+   511→- Batched upload (50 events or 10s, whichever first), gzip-compressed.
+   512→- Exponential backoff with jitter on failure; max 30s between retries.
+   513→- Sequence numbers enable cloud-side dedup of retransmissions.
+   514→- Buffer survives device reboot.
+   515→- Buffer status (queue depth, oldest unsent age) reported in heartbeat.
+   516→
+   517→### E-07 — mTLS authenticated telemetry upload — P0
+   518→
+   519→**Concept:** §4.5, §10.1 · **Lessons:** §4.3 (no auth)
+   520→
+   521→Every telemetry payload is sent over mTLS with the device's client certificate.
+   522→
+   523→**Acceptance criteria:**
+   524→- Device has a unique client cert issued at provisioning.
+   525→- Cloud validates cert at TLS handshake; revoked certs rejected.
+   526→- Cert serial recorded in `devices` table; mapped to device_id.
+   527→- No telemetry accepted without valid mTLS.
+   528→- Cert auto-renewal before expiry (90-day window).
+   529→
+   530→### E-08 — Versioned telemetry schema — P0
+   531→
+   532→**Concept:** §4.5 · **Lessons:** §4.2 (ad-hoc JSON)
+   533→
+   534→Every payload includes `schema_version` and conforms to a versioned JSON Schema (with
+   535→protobuf definition for constrained deployments).
+   536→
+   537→**Acceptance criteria:**
+   538→- AsyncAPI spec documents the telemetry, heartbeat, and OTA channels.
+   539→- Cloud-side schema validation on every payload; violations rejected with structured error.
+   540→- Schema is backward-compatible (new fields optional; removed fields deprecated first).
+   541→- Schema version recorded per payload for analytics.
+   542→
+   543→### E-09 — Heartbeat & self-diagnostics — P1
+   544→
+   545→**Concept:** §4.7, §12.5 · **Lessons:** §4.3 (no heartbeat)
+   546→
+   547→Periodic health report from device to cloud.
+   548→
+   549→**Acceptance criteria:**
+   550→- Heartbeat every 60s: device_id, firmware_version, model_version, CPU temp, storage free,
+   551→  buffer depth, GPS fix status, camera status, uptime.
+   552→- Cloud marks device offline if no heartbeat for 5min.
+   553→- Operator console shows device health.
+   554→- Heartbeat triggers alert if CPU temp > 80°C or storage < 10% or camera offline.
+   555→
+   556→### E-10 — OTA firmware & model updates (A/B) — P1
+   557→
+   558→**Concept:** §4.7 · **Lessons:** §4.3 (no OTA)
+   559→
+   560→Remote firmware and model updates with automatic rollback.
+   561→
+   562→**Acceptance criteria:**
+   563→- A/B partition scheme: download → verify signature → write inactive partition → boot.
+   564→- Health check watchdog: if new image fails to heartbeat within 60s of boot, auto-rollback to
+   565→  previous partition.
+   566→- Updates triggerable per-device or fleet-wide (operator scope).
+   567→- Update status visible in operator console (downloading / verifying / applying / rolled-back).
+   568→- Model updates (YOLO weights) use the same A/B scheme with model-version negotiation.
+   569→
+   570→### E-11 — `sim` mode (honestly labeled) — P0
+   571→
+   572→**Concept:** §4.4 · **Lessons:** §4.1 (the integrity fix)
+   573→
+   574→A software-only simulation mode for dev/demos/CI.
+   575→
+   576→**Acceptance criteria:**
+   577→- Seeded RNG (reproducible).
+   578→- Runs the same counter pipeline (same downstream contract).
+   579→- Every emitted payload includes `source: "simulator"`.
+   580→- Every consuming UI labels simulator data distinctly (e.g., a "SIM" badge).
+   581→- No `webcam` mode that ignores pixels. The integrity gap is closed.
+   582→
+   583→### E-12 — LED strip GPIO driver — P0
+   584→
+   585→**Concept:** §4.1 · **Lessons:** —
+   586→
+   587→Drives the WS2812B LED strip via GPIO.
+   588→
+   589→**Acceptance criteria:**
+   590→- Four-tier colors: green / yellow / red / blinking-red.
+   591→- Blink rate 2Hz for overloaded; respects `prefers-reduced-motion` (steady red if a
+   592→  reduced-motion flag is set on the device — e.g., for areas with photosensitive regulations).
+   593→- Brightness auto-adjusts to ambient light (photoresistor input).
+   594→- Self-test on boot: cycle through all four tiers for 2s each.
+   595→
+   596→---
+   597→
+   598→## 6. Backend / platform features (B)
+   599→
+   600→### B-01 — Layered service architecture — P0
+   601→
+   602→**Concept:** §5.1, §5.2 · **Lessons:** §2.4 (god-module), §2.3 (no service layer)
+   603→
+   604→Routes → services → repositories → models. No inline business logic in handlers.
+   605→
+   606→**Acceptance criteria:**
+   607→- Route handlers contain only: parse request, call service, format response.
+   608→- Services contain business logic; no SQL.
+   609→- Repositories contain data access; no business rules.
+   610→- `transit.py` split into 6 modules (§5.2).
+   611→- Code review enforces layering; CI lint blocks cross-layer imports.
+   612→
+   613→### B-02 — PostgreSQL + PostGIS primary store — P0
+   614→
+   615→**Concept:** §6.1 · **Lessons:** §2.3 (5 SQLite files, fan-out)
+   616→
+   617→Single PostgreSQL database with RLS, partitioning, spatial indexes.
+   618→
+   619→**Acceptance criteria:**
+   620→- All durable data in PostgreSQL (no file-per-country).
+   621→- `country_code` + RLS policies on tenant-scoped tables.
+   622→- `telemetry_logs` range-partitioned by month.
+   623→- PostGIS `GEOMETRY(LineString)` for routes; spatial index.
+   624→- No denormalized polylines (geometry stored once).
+   625→- Alembic migrations, versioned + reversible; CI applies to throwaway DB.
+   626→
+   627→### B-03 — Redis live state + cache + pub/sub — P0
+   628→
+   629→**Concept:** §6.3 · **Lessons:** §2.3 (process-local singleton)
+   630→
+   631→Shared live vehicle state, caching, rate limiting, WebSocket adapter.
+   632→
+   633→**Acceptance criteria:**
+   634→- Live vehicle state in Redis (sub-ms reads).
+   635→- Multiple FastAPI workers share state.
+   636→- WebSocket gateway uses Redis pub/sub adapter (any worker → any subscriber).
+   637→- Rate limiting Redis-backed.
+   638→- Cache keys have TTLs; bounded LRU where unbounded would leak.
+   639→
+   640→### B-04 — Versioned REST API (`/api/v1/`) — P0
+   641→
+   642→**Concept:** §7.1, §7.2 · **Lessons:** §2.6 (no versioning, no response models)
+   643→
+   644→All endpoints under `/api/v1/` with `response_model`, `tags`, `responses=`.
+   645→
+   646→**Acceptance criteria:**
+   647→- Every endpoint has `response_model`, `tags`, `summary`, `description`, `responses=`.
+   648→- OpenAPI spec exported + committed; CI diffs spec on PRs (breaking changes fail).
+   649→- HTTP semantics: 201+Location for create, 204 for delete, consistent error shape.
+   650→- Cursor pagination on list endpoints.
+   651→- API reference generated from OpenAPI (not hand-written).
+   652→
+   653→### B-05 — WebSocket fleet gateway — P0
+   654→
+   655→**Concept:** §3.2, §9.5 · **Lessons:** §3.6 (no WS in frontend despite claim)
+   656→
+   657→socket.io gateway for live fleet updates.
+   658→
+   659→**Acceptance criteria:**
+   660→- Clients subscribe to a bounding box; server filters (not push-everything).
+   661→- Auto-reconnect with exponential backoff (client-side).
+   662→- Redis pub/sub adapter for horizontal scaling.
+   663→- Authenticated connection (JWT for commuters/operators; device cert for edge).
+   664→- Per-connection rate limit on subscriptions.
+   665→
+   666→### B-06 — Telemetry ingest service (mTLS) — P0
+   667→
+   668→**Concept:** §3.2, §4.5, §10.1 · **Lessons:** §4.3 (no auth), §2.5 (no validation)
+   669→
+   670→Dedicated endpoint for edge device telemetry.
+   671→
+   672→**Acceptance criteria:**
+   673→- mTLS client cert validation.
+   674→- Device registry check (registered + bound + not revoked).
+   675→- Schema validation against versioned JSON Schema.
+   676→- Enrichment (route matching, geofence check).
+   677→- Write to PostgreSQL (durable) + Redis (live) + alert evaluation.
+   678→- Sequence dedup.
+   679→- Rate limit per device (prevent malfunction flood).
+   680→
+   681→### B-07 — Alert service with evaluation rules — P0
+   682→
+   683→**Concept:** §3.2, §6.1 · **Lessons:** original had alerts (good) but rules inline
+   684→
+   685→Detects overload, route deviation, driving anomaly, signal loss.
+   686→
+   687→**Acceptance criteria:**
+   688→- Rules configurable (thresholds in `country_config` / `operator_config`).
+   689→- Overload: tier == overloaded for >N seconds → alert.
+   690→- Route deviation: vehicle >200m from route geometry (PostGIS `ST_DWithin`) → alert.
+   691→- Speed anomaly: speed > limit (per road class) → alert.
+   692→- Signal loss: no telemetry for >N minutes → alert.
+   693→- Dedup: no duplicate open alerts for same vehicle+type.
+   694→- Every alert has evidence (telemetry snapshot) + raised_at + audited.
+   695→
+   696→### B-08 — Background workers (Celery/ARQ) — P1
+   697→
+   698→**Concept:** §5.5 · **Lessons:** §2.8 (demo_simulator daemon thread)
+   699→
+   700→Time-series tasks run in workers, not the request path.
+
+[showing lines 1-700 of 1358; use offset=701 with limit to continue reading]

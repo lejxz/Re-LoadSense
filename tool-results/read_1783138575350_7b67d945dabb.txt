@@ -1,0 +1,524 @@
+     1→# 09 — Deployment Topology
+     2→
+     3→> **How it ships and runs — with Vercel as the simulation host.** The original LoadSense had no
+     4→> CI/CD, a single-stage Dockerfile that ran as root and copied the entire repo (including
+     5→> `.git/`, `docs/`, `tests/`) into the image, no health checks, no monitoring, no backups, no
+     6→> secrets management, and no staging environment
+     7→> (`Lesson: legacy-analysis/lessons-learned.md §9 (operability & DevOps failures)`).
+     8→>
+     9→> This document specifies the inverse discipline for **two deployment targets**:
+    10→>
+    11→> 1. **Simulation (the next session's build) → Vercel** — the primary, fast, zero-config host.
+    12→> 2. **Production target (real pilot, high write volume) → k8s** — future, when edge device
+    13→>    count and write volume justify it.
+    14→>
+    15→> **Vercel coverage is detailed and practical** — this doc is the deployment handbook for the
+    16→> next session.
+    17→
+    18→---
+    19→
+    20→## Table of contents
+    21→
+    22→1. [Two deployment targets](#1-two-deployment-targets)
+    23→2. [Vercel simulation deployment (detailed)](#2-vercel-simulation-deployment-detailed)
+    24→3. [Vercel feature mapping](#3-vercel-feature-mapping)
+    25→4. [Vercel project configuration](#4-vercel-project-configuration)
+    26→5. [Environment strategy](#5-environment-strategy)
+    27→6. [Custom domains and route groups](#6-custom-domains-and-route-groups)
+    28→7. [Edge runtime vs Node.js runtime](#7-edge-runtime-vs-nodejs-runtime)
+    29→8. [Performance and cold-start mitigation](#8-performance-and-cold-start-mitigation)
+    30→9. [Vercel limits to flag](#9-vercel-limits-to-flag)
+    31→10. [Production target deployment (k8s)](#10-production-target-deployment-k8s)
+    32→11. [CI/CD pipeline](#11-cicd-pipeline)
+    33→12. [Observability](#12-observability)
+    34→13. [Backup and disaster recovery](#13-backup-and-disaster-recovery)
+    35→14. [SLOs and error budgets](#14-slos-and-error-budgets)
+    36→15. [Graceful shutdown](#15-graceful-shutdown)
+    37→16. [Simulation deviations](#16-simulation-deviations)
+    38→
+    39→---
+    40→
+    41→## 1. Two deployment targets
+    42→
+    43→| Target | Host | When | Why |
+    44→|---|---|---|---|
+    45→| **Simulation** | **Vercel** | Next session's build through pilot-readiness review | Fast, zero-config Next.js deployment; generous hobby/pro tier; built-in Preview Deployments per PR; built-in Postgres/KV/Blob/Cron/Edge Config; CDN + Edge Functions globally |
+    46→| **Production target** | **k8s** (EKS/GKE/AKS) | When edge device count and write volume justify it — real pilot with real Pi 5 devices across multiple operators | Persistent WebSocket connections; long-running background workers; mTLS termination for edge devices; horizontal scaling to many replicas; GPU node pools for ML serving; full control over scheduling and resource isolation |
+    47→
+    48→The simulation runs on Vercel from day one of the build. The production target is documented
+    49→here so the architecture does not need to be re-thought when the pilot scales — the swap is a
+    50→deployment-target change, not an architecture change. Cross-references: `01-system-overview.md
+    51→§simulation-deployment`, `03-cloud-backend.md §7 simulation deviations`.
+    52→
+    53→---
+    54→
+    55→## 2. Vercel simulation deployment (detailed)
+    56→
+    57→Vercel is the primary host for the simulation. Next.js 16 deploys to Vercel with **zero
+    58→configuration** — `vercel` CLI auto-detects the framework, or Git-connected auto-deploy builds
+    59→every push. The build produces Edge functions (for read-heavy API Route Handlers) and Node.js
+    60→serverless functions (for write-heavy or library-dependent Route Handlers), served from
+    61→Vercel's Edge Network.
+    62→
+    63→```mermaid
+    64→%% Vercel simulation deployment (flowchart LR)
+    65→flowchart LR
+    66→    DEV[Developer<br/>git push] --> GH[GitHub repo]
+    67→    GH -->|push to feature branch| VERCEL_PREVIEW[Vercel auto-build<br/>Preview Deployment per PR]
+    68→    GH -->|merge to main| VERCEL_PROD[Vercel auto-build<br/>Production deployment]
+    69→    VERCEL_PREVIEW --> EDGE_NETWORK_PREV[Vercel Edge Network<br/>Preview URL]
+    70→    VERCEL_PROD --> EDGE_NETWORK_PROD[Vercel Edge Network<br/>Production URL]
+    71→    EDGE_NETWORK_PROD --> EDGE_FNS[Edge Runtime functions<br/>fleet, routes, ETA, places]
+    72→    EDGE_NETWORK_PROD --> NODE_FNS[Node.js Runtime functions<br/>telemetry ingest, chatbot, auth, imports]
+    73→    EDGE_FNS --> VP[(Vercel Postgres<br/>PG-compatible)]
+    74→    EDGE_FNS --> VK[(Vercel KV<br/>Redis-compatible)]
+    75→    NODE_FNS --> VP
+    76→    NODE_FNS --> VK
+    77→    NODE_FNS --> VB[(Vercel Blob<br/>route import files)]
+    78→    CRON[Vercel Cron<br/>simulator tick, retention] --> NODE_FNS
+    79→    EC[Vercel Edge Config<br/>feature flags] --> EDGE_FNS
+    80→    WS_SIDECAR[socket.io mini-service<br/>via XTransformPort gateway] -.->|WSS| EDGE_NETWORK_PROD
+    81→    EDGE_NETWORK_PROD -->|WSS /ws/v1/fleet| COMMUTER[Commuter PWA]
+    82→    EDGE_NETWORK_PROD -->|WSS| OPERATOR[Operator console]
+    83→```
+    84→
+    85→### 2.1 Vercel products used
+    86→
+    87→- **Next.js app host** — Vercel auto-detects Next.js 16; builds with `next build`; serves
+    88→  static + RSC + Route Handlers from the Edge Network.
+    89→- **Vercel Postgres** — PostgreSQL-compatible database for the primary store (`countries`,
+    90→  `operators`, `vehicles`, `routes`, `route_points`, `devices`, `telemetry_logs`,
+    91→  `vehicle_states`, `operator_alerts`, `operator_feedback`, `chatbot_queries`, `users`,
+    92→  `api_keys`, `audit_log`). **Note: PostGIS is not available on the free tier** — see §3.
+    93→- **Vercel KV** — Redis-compatible for live-fleet state (`vehicle_states:live:{vehicle_id}`),
+    94→  rate-limit buckets (`ratelimit:bucket:*`), JWT denylist (`revoked:jti:*`), demand forecast
+    95→  cache (`demand:{route_id}:{yyyymmddhh}`). **Note: no pub/sub on Vercel KV** — see §3.
+    96→- **Vercel Blob** — S3-compatible object storage for route import files (GeoJSON/CSV/GTFS
+    97→  uploads land in Blob before streaming-parse by the import Route Handler).
+    98→- **Vercel Cron** — scheduled jobs: simulator tick (every 3s, calls `/api/v1/internal/sim-tick`
+    99→  with a `CRON_SECRET` header), retention partition-drop (daily 02:00 UTC), drift regression
+   100→  check (daily 03:00 UTC), demand forecast regeneration (hourly).
+   101→- **Vercel Edge Config** — feature flags (`enable_chatbot_llm`, `enable_demand_cache`,
+   102→  `maintenance_mode`) read at the edge with ~1ms latency; updated without redeploy.
+   103→- **Vercel Environment Variables** — per-environment (Development / Preview / Production) with
+   104→  **Encrypted** flag for production secrets.
+   105→
+   106→### 2.2 The WebSocket gap (and the resolution)
+   107→
+   108→**Vercel serverless functions are stateless and cannot hold persistent WebSocket connections.**
+   109→This is the single biggest constraint. The options are:
+   110→
+   111→1. **socket.io mini-service on a separate port via the gateway's `XTransformPort` mechanism.**
+   112→   This is the recommended approach for the simulation — a small socket.io server (Railway,
+   113→   Fly.io, or a Vercel-compatible host that supports persistent processes) reachable through
+   114→   the gateway. The Next.js client connects to `/ws/v1/fleet?XTransformPort=<port>`; the
+   115→   gateway routes the WebSocket upgrade to the mini-service. This satisfies the project's
+   116→   gateway constraint and keeps the client code identical to the production target.
+   117→2. **Server-Sent Events (SSE) from a Vercel Edge function.** Vercel Edge Functions can hold a
+   118→   long-lived response stream for up to 30s; a "subscribe" Route Handler streams
+   119→   `event: fleet:update\ndata: ...` chunks. Simpler than option 1 but the 30s cap means
+   120→   clients must auto-reconnect every 25s (with the gap-closing TanStack Query refetch from
+   121→   `07-frontend-architecture.md §6`).
+   122→3. **TanStack Query polling.** The simplest fallback: `refetchInterval: 5000` on the fleet
+   123→   query. Honest, no real-time pretense, 5s latency. Acceptable for the operator console's
+   124→   alert inbox; too laggy for the commuter map's "next jeepney arriving" use case.
+   125→
+   126→**Recommendation for the simulation:** socket.io mini-service (option 1) for the commuter map
+   127→real-time updates; TanStack Query polling (option 3) as a fallback if the mini-service is
+   128→unreachable. SSE (option 2) is documented as an alternative if mini-service hosting is
+   129→unavailable. The client code is the same in all three cases — only the transport differs.
+   130→
+   131→### 2.3 Vercel project wiring
+   132→
+   133→- **Region:** `sin1` (Singapore) for ASEAN latency — Vercel Postgres, Vercel KV, and the
+   134→  serverless functions all run in `sin1`. Edge functions are global (run on the Edge Network).
+   135→- **Build command:** `next build` (default).
+   136→- **Output directory:** `.next` (default).
+   137→- **Install command:** `npm ci` (pinned via `package-lock.json`).
+   138→- **Node version:** 20 (set in `vercel.json` or project settings).
+   139→- **Git-connected:** the Vercel project is connected to the GitHub repo; every push to a
+   140→  feature branch creates a Preview Deployment with a unique URL; every merge to `main` creates
+   141→  a Production deployment. Preview Deployments get their own Vercel Postgres branch (via
+   142→  Vercel's branching feature) so PRs can run schema migrations without affecting production
+   143→  data.
+   144→
+   145→---
+   146→
+   147→## 3. Vercel feature mapping
+   148→
+   149→| Re-LoadSense need | Vercel product | Notes |
+   150→|---|---|---|
+   151→| Next.js app host | **Vercel (Node.js + Edge runtime)** | Edge runtime for read-heavy Route Handlers (fleet, routes, ETA, places) for global low latency; Node.js for write-heavy or library-dependent routes (telemetry ingest, chatbot, route import) |
+   152→| PostgreSQL primary store | **Vercel Postgres** | PG-compatible. **PostGIS is NOT available on the free tier** → bounding-box geofence math in TypeScript fallback (see `04-data-model.md §simulation deviations`). Production target uses managed Postgres with PostGIS. |
+   153→| Redis (cache + rate limit + JWT denylist + live-fleet state) | **Vercel KV** | Redis-compatible. **Note: no pub/sub on Vercel KV** → use the socket.io mini-service (§2.2 option 1) for live fleet updates, or polling/SSE. Cache + rate limit + denylist work natively on KV. |
+   154→| File storage (route imports) | **Vercel Blob** | S3-compatible. Route import Route Handler streams upload to Blob, then streaming-parses. 10 MB + 10k row caps enforced in the handler. |
+   155→| Scheduled jobs (simulator tick, retention, drift check, demand regen) | **Vercel Cron** | Cron syntax in `vercel.json`. Each cron job calls an internal Route Handler (`/api/v1/internal/*`) authenticated by a `CRON_SECRET` header. **The simulator must be a Vercel Cron job, not a daemon** — Vercel serverless has no persistent processes. |
+   156→| Secrets | **Vercel Environment Variables + Encrypted** | Per-env (Development / Preview / Production). Production secrets use the Encrypted flag. `.env` is dev-only. |
+   157→| Feature flags | **Vercel Edge Config** | Read at the edge with ~1ms latency. Flags: `enable_chatbot_llm`, `enable_demand_cache`, `maintenance_mode`, `demo_mode`. Updated via the Edge Config API without redeploy. |
+   158→| WebSocket (live fleet) | ⚠️ **Vercel serverless doesn't hold persistent WS** | Options: (a) socket.io mini-service via the `XTransformPort` gateway mechanism (recommended), (b) Server-Sent Events from an Edge function (30s cap), (c) TanStack Query polling (simplest, 5s latency). See §2.2. |
+   159→| Edge device auth | **`X-Device-Key` header** | mTLS not available on Vercel edge. Per-device API keys validated against `devices` table by hash lookup. See `08-security-architecture.md §2.3`. |
+   160→| Observability (logs) | **Vercel built-in logs + Sentry** | Vercel provides function-level logs and runtime metrics. Sentry for error tracking with source maps. Production target adds Prometheus + Loki + Grafana + OTel. |
+   161→| Backups | **Vercel Postgres automated backups** | Daily snapshots + PITR available on paid tier. Production target adds tested quarterly restore game-days. |
+   162→| Custom domains + HTTPS | **Vercel Domains** | Auto-renewing Let's Encrypt certs; HSTS preload. Three subdomains: `app.`/`ops.`/`gov.re-loadsense.dev`. |
+   163→| Preview environments per PR | **Vercel Preview Deployments** | Each PR gets a unique URL + a branched Vercel Postgres database. Reviewers can play with the change without affecting prod. |
+   164→
+   165→---
+   166→
+   167→## 4. Vercel project configuration
+   168→
+   169→`vercel.json` outline (illustrative — see `09-deployment-topology.md` is the authoritative
+   170→source; the actual file is committed in the repo root):
+   171→
+   172→```jsonc
+   173→{
+   174→  "$schema": "https://openapi.vercel.sh/vercel.json",
+   175→  "framework": "nextjs",
+   176→  "regions": ["sin1"],
+   177→  "functions": {
+   178→    "app/api/v1/edge/telemetry/route.ts": { "memory": 1024, "maxDuration": 30 },
+   179→    "app/api/v1/chatbot/route.ts":        { "memory": 1024, "maxDuration": 30 },
+   180→    "app/api/v1/routes/import/route.ts":  { "memory": 1024, "maxDuration": 60 }
+   181→  },
+   182→  "crons": [
+   183→    { "path": "/api/v1/internal/sim-tick",       "schedule": "*/3 * * * * * *" },
+   184→    { "path": "/api/v1/internal/retention",      "schedule": "0 2 * * *" },
+   185→    { "path": "/api/v1/internal/drift-check",    "schedule": "0 3 * * *" },
+   186→    { "path": "/api/v1/internal/demand-regen",   "schedule": "0 * * * *" }
+   187→  ],
+   188→  "headers": [
+   189→    {
+   190→      "source": "/(.*)",
+   191→      "headers": [
+   192→        { "key": "Strict-Transport-Security",    "value": "max-age=63072000; includeSubDomains; preload" },
+   193→        { "key": "X-Frame-Options",              "value": "DENY" },
+   194→        { "key": "X-Content-Type-Options",       "value": "nosniff" },
+   195→        { "key": "Referrer-Policy",              "value": "strict-origin-when-cross-origin" },
+   196→        { "key": "Permissions-Policy",           "value": "camera=(), microphone=(), geolocation=(self), interest-cohort=()" }
+   197→      ]
+   198→    }
+   199→  ]
+   200→}
+   201→```
+   202→
+   203→- **`functions`** overrides set higher memory (1 GB) and longer `maxDuration` for the
+   204→  write-heavy / library-dependent Route Handlers. The default Edge functions run with no
+   205→  memory limit and 30s max duration.
+   206→- **`crons`** schedules the four internal jobs. Each calls an internal Route Handler that
+   207→  verifies the `X-Cron-Secret` header (matching a Vercel env var) before executing — a public
+   208→  endpoint would be a DoS vector.
+   209→- **`headers`** applies the security headers globally. CSP is set in `next.config.ts` via the
+   210→  `headers()` function because it needs nonce support for inline scripts.
+   211→
+   212→---
+   213→
+   214→## 5. Environment strategy
+   215→
+   216→| Environment | Vercel scope | Data | Access | Cadence |
+   217→|---|---|---|---|---|
+   218→| **Development** | Local `vercel dev` + Vercel "Development" env vars | Synthetic (`sim` mode); seeded reproducibly | All engineers | Per-commit |
+   219→| **Preview** | Auto per PR + branched Vercel Postgres | Synthetic, isolated per PR | Engineers + reviewers | Per-PR |
+   220→| **Production** | Vercel "Production" env vars + main branch | Real telemetry from real devices (when pilot starts) | On-call + platform admins | Per-merge-to-main (auto-deploy) |
+   221→
+   222→**Environment parity:** all three environments run the same Next.js build; only env vars + the
+   223→Vercel Postgres branch differ. The original LoadSense's `DEMO_MODE` defaulted to `true` in
+   224→production (`Lesson: legacy-analysis/lessons-learned.md §2.8 (DEMO_MODE default true)`); Re-
+   225→LoadSense's `demo_mode` (read from Vercel Edge Config) defaults to `false` in Production and
+   226→`true` in Development / Preview, set explicitly per environment.
+   227→
+   228→---
+   229→
+   230→## 6. Custom domains and route groups
+   231→
+   232→**Simulation (one Vercel project, three route groups):**
+   233→
+   234→- `app.re-loadsense.dev` → Next.js `/` (Commuter PWA)
+   235→- `ops.re-loadsense.dev` → Next.js `/operator` (Operator console) — same Vercel project,
+   236→  domain rewrite in `vercel.json` or `next.config.ts` rewrites
+   237→- `gov.re-loadsense.dev` → Next.js `/regulator` (Regulator dashboard) — same project
+   238→
+   239→This keeps Vercel project count at 1 (simpler billing, simpler Preview Deployments). The
+   240→production target splits into three Vercel projects (or three k8s deployments) — the route
+   241→group folder structure (`app/(commuter)/`, `app/(operator)/`, `app/(regulator)/`) makes the
+   242→extraction mechanical.
+   243→
+   244→**Production target (three subdomains, possibly three projects):**
+   245→
+   246→- Three separate Next.js apps on three Vercel projects (or three k8s deployments) — see §1
+   247→  for the rationale (blast radius, bundle size, deployment cadence, CSP / cookie scope).
+   248→
+   249→HTTPS is automatic via Vercel's Let's Encrypt integration; HSTS preload is enabled.
+   250→
+   251→---
+   252→
+   253→## 7. Edge runtime vs Node.js runtime
+   254→
+   255→Vercel supports two runtimes for Next.js Route Handlers. The choice is per-route:
+   256→
+   257→| Runtime | Use for | Why |
+   258→|---|---|---|
+   259→| **Edge** (`export const runtime = 'edge'`) | Read-heavy API routes: `GET /api/v1/fleet`, `GET /api/v1/routes`, `GET /api/v1/eta/*`, `GET /api/v1/places`, `GET /api/v1/demand/*` | Global low latency (runs on Edge Network close to the user); no cold start; WebCrypto for fast JWT verification |
+   260→| **Node.js** (default) | Write-heavy or library-dependent routes: `POST /api/v1/edge/telemetry`, `POST /api/v1/chatbot`, `POST /api/v1/routes/import`, `POST /api/v1/auth/*`, all `/api/v1/internal/*` cron jobs | Heavy Pydantic-equivalent Zod validation, multi-step DB transactions, library deps that need Node APIs (e.g., streaming parsers), longer max duration (up to 300s on Pro) |
+   261→
+   262→The edge ingest Route Handler (`POST /api/v1/edge/telemetry`) runs on Node.js because it does
+   263→multi-step validation + enrich + DB transaction + Redis SET + alert service dispatch — too
+   264→heavy and too library-dependent for the Edge runtime's constraints.
+   265→
+   266→---
+   267→
+   268→## 8. Performance and cold-start mitigation
+   269→
+   270→- **Static + ISR:** the commuter PWA's route directory, the operator console's audit log
+   271→  landing page, and the regulator dashboard's reports index use Next.js ISR
+   272→  (`revalidate: 300`) — semi-static, regenerated in the background.
+   273→- **Edge Network CDN:** static assets (JS, CSS, fonts, images) served from the Edge Network
+   274→  with immutable cache headers; map tiles cached at the browser and at the Workbox service
+   275→  worker (stale-while-revalidate, see `07-frontend-architecture.md §7`).
+   276→- **Edge functions** have no cold start — they run on Vercel's always-warm Edge Network.
+   277→- **Node.js functions** have cold starts (~200-500ms). Mitigations:
+   278→  - Keep functions small (smaller bundle = faster cold start).
+   279→  - Move read-heavy paths to Edge runtime (no cold start).
+   280→  - Use Vercel's "Fluid Compute" (Pro) for warm-instance reuse on Node.js functions.
+   281→  - The simulator tick is a Vercel Cron job every 3s, which keeps the ingest function warm.
+   282→- **Bundle budgets:** commuter PWA initial JS ≤ 150 KB gzipped (see `07-frontend-architecture.md
+   283→  §11`); operator console initial JS ≤ 400 KB gzipped (charts + tables accepted).
+   284→
+   285→---
+   286→
+   287→## 9. Vercel limits to flag
+   288→
+   289→| Limit | Value | Mitigation |
+   290→|---|---|---|
+   291→| **Function max duration** | 10s (Hobby) / 300s (Pro) for Node.js; 30s for Edge | Long-running jobs (route import, drift check) chunked; telemetry ingest is fast (<2s p95) |
+   292→| **Request body size** | 4.5 MB serverless | Route imports stream to Vercel Blob first, then parse; never `await request.json()` on unbounded bodies |
+   293→| **No persistent processes** | Serverless only | The simulator is a Vercel Cron job every 3s, **not a daemon**. Background workers are Cron-scheduled Route Handlers. |
+   294→| **No persistent WebSocket** | Serverless only | socket.io mini-service via `XTransformPort` gateway (§2.2 option 1) or SSE / polling |
+   295→| **Edge function memory** | 128 MB | Edge functions stay small; heavy work goes to Node.js functions |
+   296→| **Vercel Postgres free tier** | No PostGIS, limited storage | Bounding-box math in TS fallback; production target uses managed Postgres with PostGIS |
+   297→| **Vercel KV free tier** | No pub/sub | Cache + rate limit + denylist work; live updates via socket.io mini-service or polling |
+   298→| **Cron job frequency** | Min once per minute on Hobby; per-second possible via custom scheduling on Pro | The 3s simulator tick uses a 1s cron `*/3 * * * * * *` on Pro; on Hobby, fall back to 1min with internal 3s polling inside the function for 60s |
+   299→
+   300→---
+   301→
+   302→## 10. Production target deployment (k8s)
+   303→
+   304→The production target runs on k8s (cloud-managed EKS / GKE / AKS, or self-hosted) when the
+   305→pilot's edge device count and write volume justify it. The swap from Vercel to k8s is a
+   306→deployment-target change — the application code, data model, and API contracts are identical.
+   307→
+   308→```mermaid
+   309→%% Production target k8s topology (flowchart LR)
+   310→flowchart LR
+   311→    INGRESS[Ingress<br/>nginx-ingress + cert-manager] --> API[API deployment<br/>FastAPI + HPA]
+   312→    INGRESS --> WS[WS gateway deployment<br/>socket.io + Redis adapter]
+   313→    INGEST[Edge mTLS ingress<br/>cert-manager + custom CA] --> EDGE_INGEST[Edge ingest deployment<br/>FastAPI + HPA]
+   314→    WORKER[Worker deployment<br/>Celery + HPA on queue depth]
+   315→    ML[ML serving deployment<br/>onnxruntime + GPU node pool]
+   316→    API --> PG[(PostgreSQL<br/>managed + read replicas + PgBouncer)]
+   317→    API --> REDIS[(Redis cluster<br/>cache + pub/sub + rate limit)]
+   318→    WS --> REDIS
+   319→    EDGE_INGEST --> PG
+   320→    EDGE_INGEST --> REDIS
+   321→    WORKER --> PG
+   322→    WORKER --> MLFLOW[(MLflow<br/>artifact registry)]
+   323→    ML --> MLFLOW
+   324→    ML --> REDIS
+   325→    PROM[Prometheus] -.->|scrape| API
+   326→    PROM -.->|scrape| WS
+   327→    PROM -.->|scrape| EDGE_INGEST
+   328→    PROM -.->|scrape| WORKER
+   329→    PROM -.->|scrape| ML
+   330→    LOKI[Loki] -.->|ingest logs| API
+   331→    LOKI -.->|scrape| WS
+   332→    GRAF[Grafana] --> PROM
+   333→    GRAF --> LOKI
+   334→    ARGO[Argo CD<br/>GitOps] -->|sync| API
+   335→    ARGO -->|sync| WS
+   336→    ARGO -->|sync| EDGE_INGEST
+   337→    ARGO -->|sync| WORKER
+   338→    ARGO -->|sync| ML
+   339→```
+   340→
+   341→- **Helm chart** per service (api, ws-gateway, edge-ingest, worker, ml-serving) with values
+   342→  per environment (staging, prod).
+   343→- **GitOps:** Argo CD (or Flux) watches the `infra/` directory of the repo; every merge to
+   344→  `main` syncs to staging; every tag syncs to prod via Argo Rollouts canary.
+   345→- **Canary releases:** Argo Rollouts — 10% → 50% → 100% with automatic rollback on SLO breach
+   346→  (error rate > 1% for 5 min, p95 latency > 500ms for 5 min).
+   347→- **HPA:** API and edge-ingest scale on CPU + RPS; worker scales on queue depth; ML serving
+   348→  scales on inference latency.
+   349→- **Why k8s for prod (not Vercel):**
+   350→  - **Persistent WebSocket connections** — the WS gateway holds thousands of long-lived
+   351→    socket.io connections; Vercel serverless cannot.
+   352→  - **Long-running background workers** — Celery workers for retention, drift detection,
+   353→    telemetry aggregation run for minutes; Vercel Cron jobs are bounded.
+   354→  - **mTLS termination for edge devices** — production edge devices use mTLS client certs;
+   355→    k8s ingress with cert-manager + custom CA terminates this; Vercel edge cannot.
+   356→  - **Horizontal scaling to many replicas** — pilot scale (hundreds of devices, dozens of
+   357→    operators) justifies dedicated capacity.
+   358→  - **GPU node pools for ML serving** — onnxruntime on GPU for ETA / demand inference latency;
+   359→    Vercel has no GPU.
+   360→
+   361→---
+   362→
+   363→## 11. CI/CD pipeline
+   364→
+   365→GitHub Actions runs the same pipeline for both deployment targets — only the deploy step
+   366→differs (Vercel Preview for sim; k8s staging for prod target).
+   367→
+   368→```mermaid
+   369→%% CI/CD pipeline (flowchart TD)
+   370→flowchart TD
+   371→    PR[Pull request opened] --> LINT[Lint<br/>ruff + eslint + stylelint]
+   372→    LINT --> TYPE[Type-check<br/>mypy + tsc]
+   373→    TYPE --> UNIT[Unit tests<br/>pytest + vitest]
+   374→    UNIT --> INT[Integration tests<br/>test DB on tmpfs]
+   375→    INT --> COV[Coverage gate<br/>≥80% backend, ≥70% frontend]
+   376→    COV --> SAST[SAST<br/>bandit + semgrep]
+   377→    SAST --> DEPSCAN[Dep scan<br/>pip-audit + npm audit + trivy]
+   378→    DEPSCAN --> DOCS[Docs-drift check + OpenAPI diff]
+   379→    DOCS --> BUILD[Build Docker images<br/>multi-stage, non-root]
+   380→    BUILD --> SBOM[Publish SBOM CycloneDX]
+   381→    SBOM --> PUSH[Push to registry]
+   382→    PUSH --> DEPLOY_SIM[Deploy to Vercel Preview<br/>sim target]
+   383→    PUSH --> DEPLOY_PROD[Deploy to k8s staging<br/>prod target]
+   384→    DEPLOY_SIM --> E2E[E2E Playwright + a11y axe]
+   385→    DEPLOY_PROD --> E2E
+   386→    E2E --> LOAD[Load test k6]
+   387→    LOAD --> CONTRACT[Contract test schemathesis]
+   388→    CONTRACT --> MERGE{Merge to main?}
+   389→    MERGE -->|no| PR
+   390→    MERGE -->|yes| TAG{Tag vMAJOR.MINOR.PATCH?}
+   391→    TAG -->|no| STAGING[Staging auto-deploy<br/>Vercel Production / k8s staging]
+   392→    TAG -->|yes| PROD_SIM[Vercel Production<br/>sim]
+   393→    TAG -->|yes| PROD_K8S[k8s canary 10% → 50% → 100%<br/>prod target via Argo Rollouts]
+   394→```
+   395→
+   396→- **Coverage gate:** ≥80% backend, ≥70% frontend (`Lesson: legacy-analysis/lessons-learned.md
+   397→  §7.3 (coverage gaps)`).
+   398→- **SAST:** bandit + semgrep on Python; eslint security rules on TypeScript.
+   399→- **Dep scan:** pip-audit + npm audit + trivy image scan; high/critical CVEs block the PR
+   400→  (`Lesson: legacy-analysis/lessons-learned.md §8 item 14 (no dependency audit)`).
+   401→- **Docs-drift check:** verifies every cited file path and endpoint in `concept/` and
+   402→  `docs/` actually exists (`Lesson: legacy-analysis/lessons-learned.md §6 (documentation drift)`).
+   403→- **OpenAPI diff:** `oasdiff` fails on breaking schema changes
+   404→  (`Lesson: legacy-analysis/lessons-learned.md §2.6 (no API versioning / OpenAPI discipline)`).
+   405→- **Build:** multi-stage Dockerfile, non-root user, distroless or slim base, pinned deps with
+   406→  hashes (`Lesson: legacy-analysis/lessons-learned.md §9 item 7 (single-stage Dockerfile, runs
+   407→  as root)`).
+   408→- **SBOM:** CycloneDX published with each release.
+   409→- **E2E + load + contract:** Playwright (e2e + axe-core a11y), k6 (load), schemathesis
+   410→  (contract) run against the Vercel Preview deployment (sim) or k8s staging (prod target).
+   411→- **Canary:** Argo Rollouts canary on the prod target; Vercel Production (sim) deploys
+   412→  atomically (no canary on Vercel by default — Vercel's "Flux" or Edge Config flag-based
+   413→  rollout is the equivalent).
+   414→
+   415→`Lesson: legacy-analysis/lessons-learned.md §9 (operability & DevOps failures)`,
+   416→`§7 (testing failures)`, `§8 (security)`, `§6 (docs drift)`.
+   417→
+   418→---
+   419→
+   420→## 12. Observability
+   421→
+   422→- **Simulation (Vercel):**
+   423→  - **Logs:** Vercel's built-in function logs (structured JSON via Next.js's logging).
+   424→  - **Metrics:** Vercel's built-in runtime metrics (invocations, duration, memory); custom
+   425→    business metrics emitted to Vercel's analytics or to a Sentry dashboard.
+   426→  - **Tracing:** Sentry distributed tracing (frontend + backend).
+   427→  - **Error tracking:** Sentry with source maps; release tracking per Vercel deployment.
+   428→  - **Health checks:** `GET /api/v1/health` (liveness) + `GET /api/v1/ready` (readiness — DB +
+   429→    KV + model load).
+   430→- **Production target (k8s):**
+   431→  - **Metrics:** Prometheus scraping every service (RED metrics per route + business metrics).
+   432→  - **Logs:** structlog JSON → Loki.
+   433→  - **Tracing:** OpenTelemetry auto-instrumentation (FastAPI, asyncpg, Redis, HTTP clients);
+   434→    traces shipped to Tempo or Jaeger.
+   435→  - **Dashboards:** Grafana per service (API, edge ingest, ML serving, WS gateway, DB, Redis).
+   436→  - **Alerting:** error rate > 1% for 5 min, p95 latency > 500ms for 5 min, ingest rate drop
+   437→    > 50%, model drift exceeded — route to PagerDuty / on-call.
+   438→
+   439→`Lesson: legacy-analysis/lessons-learned.md §2.9 (no structured logging, no metrics, no
+   440→tracing)`, `§9 (operability)`.
+   441→
+   442→---
+   443→
+   444→## 13. Backup and disaster recovery
+   445→
+   446→- **Vercel Postgres (sim):** automated daily snapshots + PITR available on paid tier.
+   447→  Restore-tested at least once during the simulation phase.
+   448→- **Production target (k8s + managed Postgres):**
+   449→  - WAL archiving + PITR (RPO 15 min, RTO 1 h).
+   450→  - Quarterly restore game-day — restore from backup into a fresh cluster, run smoke tests,
+   451→    tear down. Documented in `runbooks/restore-from-backup.md`.
+   452→  - Redis: AOF persistence; treated as ephemeral (rebuildable from PostgreSQL).
+   453→  - MLflow artifacts: backed up to object storage with versioning.
+   454→  - Vercel Blob (sim): S3-compatible, versioned.
+   455→
+   456→`Lesson: legacy-analysis/lessons-learned.md §9 item 5 (no DB backups)`.
+   457→
+   458→---
+   459→
+   460→## 14. SLOs and error budgets
+   461→
+   462→These SLOs apply to both deployment targets. The simulation targets are aspirational; the
+   463→production target enforces them with error-budget-based freeze rules.
+   464→
+   465→| Service | SLI | SLO target | Error budget |
+   466→|---|---|---|---|
+   467→| API (read) | availability + p95 < 300ms | 99.9% | 43 min/month |
+   468→| API (write) | availability + p95 < 500ms | 99.5% | 3.6 h/month |
+   469→| Edge ingest | availability + drop rate < 0.01% | 99.9% | 43 min/month |
+   470→| ETA prediction | p95 < 100ms | 99% | 7.2 h/month |
+   471→| WebSocket / socket.io | connection success rate | 99.5% | 3.6 h/month |
+   472→| Vercel Cron (simulator tick) | schedule miss rate < 0.1% | 99.9% | 43 min/month |
+   473→
+   474→Error-budget exhaustion freezes feature work on that service until the budget is recovered —
+   475→the team spends the next cycle on reliability work.
+   476→
+   477→`Lesson: legacy-analysis/lessons-learned.md §9 (no SLOs)`,
+   478→`../02-improved-concept.md §12.7 (SLOs & error budgets)`.
+   479→
+   480→---
+   481→
+   482→## 15. Graceful shutdown
+   483→
+   484→- **Production target (k8s):** every deployment handles `SIGTERM` — drain in-flight requests
+   485→  (up to 30s), close DB connections cleanly, flush logs, exit. HPA + readiness probe ensure
+   486→  traffic stops routing to the terminating pod before the process exits. This was missing in
+   487→  the original (`Lesson: legacy-analysis/lessons-learned.md §9 item 4 (no graceful shutdown)`).
+   488→- **Simulation (Vercel serverless):** functions are stateless; there is no in-flight state to
+   489→  drain. The simulator is a Cron job (not a daemon), so there is no persistent process to
+   490→  signal. Graceful shutdown is therefore **less of a concern on Vercel** — the production-
+   491→  target k8s deployment is where this matters. The application code is written to be shutdown-
+   492→  safe (no shared mutable state across requests, all state in Postgres / Redis / Blob) so the
+   493→  same code runs correctly on both targets.
+   494→
+   495→`Lesson: legacy-analysis/lessons-learned.md §9 item 4 (no graceful shutdown)`.
+   496→
+   497→---
+   498→
+   499→## 16. Simulation deviations
+   500→
+   501→- **Host:** Vercel (Next.js native, zero-config) — not k8s.
+   502→- **Database:** Vercel Postgres (PG-compatible, no PostGIS) — bounding-box math in TS fallback.
+   503→- **Cache / rate limit / denylist:** Vercel KV (Redis-compatible, no pub/sub) — live updates
+   504→  via socket.io mini-service on the `XTransformPort` gateway.
+   505→- **File storage:** Vercel Blob (S3-compatible).
+   506→- **Background workers:** Vercel Cron (per-minute to per-second schedule), not Celery daemons.
+   507→  The simulator is a Cron job every 3s, not a daemon thread.
+   508→- **Secrets:** Vercel Environment Variables (Encrypted for Production), not Vault.
+   509→- **Feature flags:** Vercel Edge Config, not a separate flag service.
+   510→- **WebSocket:** socket.io mini-service (recommended) / SSE / polling, not Vercel-hosted WS.
+   511→- **Edge device auth:** `X-Device-Key` header (hashed at rest), not mTLS.
+   512→- **Observability:** Vercel built-in logs + Sentry, not Prometheus + Loki + Grafana + OTel
+   513→  (those are the production target).
+   514→- **Canary:** none on Vercel by default (atomic deploy); flag-based rollout via Edge Config if
+   515→  needed. Production target uses Argo Rollouts canary.
+   516→- **GPU:** none on Vercel; ML serving uses CPU onnxruntime. Production target uses GPU node
+   517→  pools.
+   518→
+   519→Cross-references: `01-system-overview.md §simulation-deployment`, `02-edge-layer.md §8
+   520→simulation deviations`, `03-cloud-backend.md §7 simulation deviations`, `04-data-model.md
+   521→§simulation deviations`, `05-api-design.md §6 simulation deviations`, `06-ml-pipeline.md §8
+   522→simulation deviations`, `07-frontend-architecture.md §12 simulation deviations`,
+   523→`08-security-architecture.md §12 simulation deviations`.
+   524→
