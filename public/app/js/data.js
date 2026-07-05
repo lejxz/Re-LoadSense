@@ -161,3 +161,6 @@
       y: 88 - ((coord.latitude - bounds.minLat) / latRange) * 76,
     };
   }
+
+// Expose refreshData for socket.js to call on fleet:update
+if (typeof window !== 'undefined') { window.refreshData = refreshData; }
