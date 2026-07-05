@@ -30,12 +30,14 @@ function drawMap(containerId, routeFilter) {
           maxZoom: 20,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/">CARTO</a>'
         }),
+      'Satellite': L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Esri' }),
         'Dark': L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
           maxZoom: 20,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors &copy; <a href="https://carto.com/">CARTO</a>'
         })
       };
-      const tileLayer = TILE_LAYERS['Standard'].addTo(map);
+      const savedTile = (typeof localStorage !== 'undefined' && localStorage.getItem('loadsense_map_tile')) || 'Standard';
+      const tileLayer = (TILE_LAYERS[savedTile] || TILE_LAYERS['Standard']).addTo(map);
       tileLayer.on('tileerror', function(e) {
         if (e.tile) e.tile.style.display = 'none';
       });
@@ -91,8 +93,8 @@ function drawMap(containerId, routeFilter) {
           const selectedRoute = route.route === state.selectedRoute;
           if (selectedRoute) {
             L.polyline(latlngs, { color: '#ffffff', weight: 12, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
-            L.polyline(latlngs, { color: '#0b57d0', weight: 8, opacity: 0.98, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
-            L.polyline(latlngs, { color: '#58a6ff', weight: 3, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+            L.polyline(latlngs, { color: '#087b68', weight: 8, opacity: 0.98, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
+            L.polyline(latlngs, { color: '#0d9488', weight: 3, opacity: 0.95, lineCap: 'round', lineJoin: 'round' }).addTo(layerGroup);
             
             let stopNumber = 0;
             (routeStops.length ? routeStops : validPoints).forEach((point, idx, allPoints) => {
@@ -185,7 +187,7 @@ function drawMap(containerId, routeFilter) {
         if (existing.tier !== vehicle.tier) {
           const newIcon = L.divIcon({
             className: 'vehicle-icon-wrapper',
-            html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg></span>`,
+            html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true" style="position:relative;"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg><span style="position:absolute;bottom:-2px;right:-2px;background:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:bold;border:1px solid currentColor;">${vehicle.direction === "forward" ? "▲" : "▼"}</span></span>`,
             iconSize: [28, 28],
             iconAnchor: [14, 14],
             popupAnchor: [0, -14]
@@ -200,7 +202,7 @@ function drawMap(containerId, routeFilter) {
         // Create new marker
         const icon = L.divIcon({
           className: 'vehicle-icon-wrapper',
-          html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg></span>`,
+          html: `<span class="vehicle-div-icon ${tier}" aria-hidden="true" style="position:relative;"><svg viewBox="0 0 24 24"><path d="M6 3h12a3 3 0 0 1 3 3v9a2 2 0 0 1-2 2v2a1 1 0 0 1-2 0v-2H7v2a1 1 0 0 1-2 0v-2a2 2 0 0 1-2-2V6a3 3 0 0 1 3-3Zm0 3v5h12V6H6Zm2 8a1.5 1.5 0 1 0 0 .01V14Zm8 0a1.5 1.5 0 1 0 0 .01V14Z"/></svg><span style="position:absolute;bottom:-2px;right:-2px;background:#fff;border-radius:50%;width:14px;height:14px;display:flex;align-items:center;justify-content:center;font-size:8px;font-weight:bold;border:1px solid currentColor;">${vehicle.direction === "forward" ? "▲" : "▼"}</span></span>`,
           iconSize: [28, 28],
           iconAnchor: [14, 14],
           popupAnchor: [0, -14]
@@ -358,6 +360,7 @@ function drawMap(containerId, routeFilter) {
           if (featureLayer && featureLayer.bringToFront) featureLayer.bringToFront();
           if (clusterLayer && clusterLayer.bringToFront) clusterLayer.bringToFront();
           state.mapActiveTile[containerId] = next;
+          try { localStorage.setItem("loadsense_map_tile", name); } catch(e) {}
         });
       });
 

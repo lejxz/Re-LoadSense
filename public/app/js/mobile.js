@@ -670,3 +670,37 @@
     }
   };
 
+
+// === Menu tab + theme toggle ===
+  // Handle theme toggle buttons
+  document.querySelectorAll('#themeToggle button').forEach(btn => {
+    btn.addEventListener('click', function() {
+      const theme = this.getAttribute('data-theme');
+      document.querySelectorAll('#themeToggle button').forEach(b => b.classList.remove('primary'));
+      this.classList.add('primary');
+      if (theme === 'dark') {
+        document.documentElement.classList.add('dark');
+      } else if (theme === 'light') {
+        document.documentElement.classList.remove('dark');
+      } else {
+        // System — respect prefers-color-scheme
+        if (window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      }
+      try { localStorage.setItem('loadsense_theme', theme); } catch(e) {}
+    });
+  });
+
+  // Restore saved theme
+  try {
+    const savedTheme = localStorage.getItem('loadsense_theme') || 'system';
+    document.querySelectorAll('#themeToggle button').forEach(b => {
+      b.classList.toggle('primary', b.getAttribute('data-theme') === savedTheme);
+    });
+    if (savedTheme === 'dark' || (savedTheme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+  } catch(e) {}
