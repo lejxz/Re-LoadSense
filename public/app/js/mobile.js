@@ -632,6 +632,7 @@
     // Dirty-checking: only re-render if data actually changed
     let _lastMobileHash = '';
     setInterval(async () => {
+      if (document.hidden) return; // pause polling when tab inactive
       if (!qs("appScreen").classList.contains("hidden")) {
         await refreshData({ includeAuxiliary: false });
         const newHash = JSON.stringify({

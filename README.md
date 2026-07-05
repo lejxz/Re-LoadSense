@@ -1,100 +1,61 @@
 # Re-LoadSense
 
-> **Real information. Safer rides. Smarter cities.** — re-imagined as a production-grade platform.
-> **#Sense the Load**
- 
-Re-LoadSense is a ground-up recreation of the original
-[LoadSense](https://github.com/lejxz/LoadSense) hackathon project — a dual-layer intelligent
-transportation platform that turns every public utility vehicle (PUV) into a real-time
-occupancy sensor for ASEAN cities.
+> **Real information. Safer rides. Smarter cities.** — a personal portfolio project that recreates and improves upon a hackathon PUV occupancy intelligence submission.
 
-The original LoadSense was a ASEAN AI Hackathon 2026 submission that placed in the
-top 6 of its track. It had the right mission and the right high-level architecture — and
-roughly fifty concrete production-readiness failures spanning backend, frontend, edge, ML,
-docs, tests, security, and operability.
+Re-LoadSense is a ground-up recreation of the original [LoadSense](https://github.com/lejxz/LoadSense) hackathon project. The old project's **HTML/CSS/JS frontend is kept and improved**; the **Python/FastAPI backend is replaced** by a **Next.js 16 full-stack** backend (TypeScript, Prisma, Vercel-native deployment).
 
-**Re-LoadSense** keeps the original mission and rebuilds everything else to near-production
-quality with a defensible architecture, honest scope, and a clear path from pilot to scale.
+## The 7 problems this project fixes
 
----
-
-## Current status
-
-| Aspect | Status |
-|---|---|
-| Concept & planning | **Complete** — see [`concept/`](./concept) |
-| Implementation | **Not started** — this pass is planning only |
-
-This repository currently contains **only planning documentation**. The concept folder holds
-the complete technical roadmap; no code has been written yet. Subsequent passes will implement
-the platform described in the concept.
-
----
-
-## Concept folder
-
-The [`concept/`](./concept) folder contains the complete planning documentation:
-
-| Document | Purpose |
-|---|---|
-| [`concept/README.md`](./concept/README.md) | Index, guiding principles, and how to navigate the concept |
-| [`concept/01-lessons-learned.md`](./concept/01-lessons-learned.md) | Forensic audit of the original LoadSense repo — the empirical foundation for every improvement |
-| [`concept/02-improved-concept.md`](./concept/02-improved-concept.md) | **(2A)** The full improved technical concept, written to near-production standard |
-| [`concept/03-features-list.md`](./concept/03-features-list.md) | **(2B)** The complete, prioritized feature list — 80 features with acceptance criteria |
-| [`concept/04-roadmap-and-milestones.md`](./concept/04-roadmap-and-milestones.md) | A phased delivery plan that turns the concept into 5 shippable milestones |
-
-**Start here:** [`concept/README.md`](./concept/README.md)
-
----
-
-## The problem (unchanged from the original — it was correct)
-
-Cebu's commuters, operators, and regulators all operate blind on the one variable that
-matters most: **how full is the next jeepney?**
-
-- Commuters wait 20+ minutes for rides that may already be full.
-- Drivers exceed legal capacity (*sabit* overloading) because there is no live capacity
-  signal.
-- Operators allocate fleets by gut-feel; LGUs have no compliance dashboard.
-- Traffic congestion costs the Philippine economy PHP 3.5 billion daily.
-
-Google Maps shows *where* a jeepney is; none of them show *whether you can fit inside it*.
-Re-LoadSense closes that gap.
-
----
-
-## What changed from the original
-
-| Dimension | Original LoadSense | Re-LoadSense |
+| # | Original problem | How this project fixes it |
 |---|---|---|
-| Edge CV | Fake (`frame.mean() % 17`) | Real YOLOv8-nano + ByteTrack, or honestly-labeled `sim` |
-| Backend | FastAPI + 5 SQLite files, no auth | FastAPI + PostgreSQL + Redis, JWT/RBAC, mTLS for edge |
-| Architecture | Routes with inline business logic; 1,860-line god-module | Layered: routes → services → repositories; split modules |
-| ML | pickle.load, target leakage, train/serve mismatch, no MLOps | MLflow registry, Feast feature parity, evidently drift, ONNX serving |
-| Frontend | Vanilla HTML/CSS/JS, no build, no a11y, no i18n | Next.js + TypeScript + Tailwind + shadcn/ui, PWA, i18n, a11y |
-| Security | CORS `*`, no auth, no rate limit, no headers | Authn/authz, RBAC, rate limit, CSP, SAST/DAST, threat model |
-| Observability | `print()`, no metrics, no traces | structlog + Prometheus + OTel + Sentry + Grafana |
-| Testing | 3 real pytest assertions, no CI | pytest + Playwright + k6, ≥80% coverage gate, CI on every PR |
-| Docs | 9+ ghost citations, drift | Generated from code; CI docs-drift check; ADRs; model cards |
-| Operability | Single-stage Docker, root, no backups, no runbooks | Multi-stage non-root, Helm/k8s, backups, runbooks, SLOs |
+| 1 | Chatbot engineering messy (5 files, 2 dead) | One consolidated grounded heuristic in TypeScript |
+| 2 | Calculations were wrong (ETA, demand, occupancy) | Correct, deterministic, tested formulas |
+| 3 | Server was slow (N+1, 5-file fan-out, no cache) | Prisma + Redis cache, no fan-out |
+| 4 | Map had route flicker + blue color + no direction arrows | Fix polyline redraw; teal color; direction arrows; 4-tier legend; 6 themes |
+| 5 | Design/UI was rough | Keep existing CSS + add dark mode + 5th Menu tab |
+| 6 | Fake edge CV (webcam mode ignored pixels) | Honest simulation — labeled "SIM", real counting algorithm |
+| 7 | No real-time updates (polled 3-30s) | socket.io live updates |
 
-See [`concept/01-lessons-learned.md`](./concept/01-lessons-learned.md) for the full forensic
-audit and [`concept/02-improved-concept.md`](./concept/02-improved-concept.md) for the
-complete improved design.
+## Tech stack
 
----
+- **Frontend:** Existing HTML/CSS/JS (from old LoadSense project)
+- **Backend:** Next.js 16 API routes (TypeScript, Prisma ORM)
+- **Database:** SQLite (dev) / Vercel Postgres (deploy)
+- **Cache:** Vercel KV (Redis)
+- **Real-time:** socket.io mini-service (port 3001)
+- **Scheduler:** Vercel Cron (sim-tick every minute)
+- **Hosting:** Vercel (region sin1)
 
-## Acknowledgements
+## Quick start
 
-The original LoadSense was built by **Team FlowerBoys** (University of San Jose–Recoletos,
-Cebu) for the ASEAN AI Hackathon 2026. The lessons-learned document critiques the *code*, not
-the *team* — a hackathon weekend is not the right unit of time to build production transit
-infrastructure, and the original submission was a strong achievement under those constraints.
+```bash
+bun install
+bun run db:push    # create SQLite DB
+bun run db:seed    # seed 8 Cebu routes + 16 vehicles
+bun run dev        # start Next.js on :3000
+# In another terminal:
+bun run dev:ws     # start socket.io on :3001
+```
 
-Re-LoadSense is the same mission, given the time and rigor it deserves.
+Open `http://localhost:3000/app/mobile.html` for the commuter app.
+Open `http://localhost:3000/app/operator.html` for the operator console.
 
----
+## Demo login
+
+- Commuter: any phone number (demo mode)
+- Operator: `operator@demo.com` / `demo123`
+
+## Project structure
+
+```
+public/app/     — old LoadSense UI (HTML/CSS/JS, kept + improved)
+src/app/api/    — Next.js API routes (replaces FastAPI)
+src/lib/        — backend services (simulator, calcs, chatbot, etc.)
+prisma/         — database schema + seed
+mini-services/  — socket.io mini-service
+concept/        — planning documentation
+```
 
 ## License
 
-See [`LICENSE`](./LICENSE).
+MIT

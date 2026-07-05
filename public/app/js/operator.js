@@ -132,6 +132,7 @@
               <div>
                 <h3>${escapeHtml(vehicle.vehicle_id)}</h3>
                 <p>Route ${escapeHtml(vehicle.route)} - ${escapeHtml(routeName(vehicle.route))}</p>
+                <p style="font-size: 11px; color: var(--muted); margin: 2px 0 0;">${escapeHtml((vehicle.vehicle_type || "PUV").replace(/_/g, " "))} • ${escapeHtml(vehicle.direction || "forward")}</p>
               </div>
               <span>${vehicle.eta_minutes} min</span>
               <span>${vehicle.occupancy}/${vehicle.capacity}</span>
